@@ -35,7 +35,6 @@ import {
   FileSystem,
   Layer,
   Path,
-  Ref,
   Schema,
   Scope,
   ServiceMap,
@@ -73,6 +72,7 @@ import {
 import { parseBase64DataUrl } from "./imageMime.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { expandHomePath } from "./os-jank.ts";
+import { createPushBus } from "./wsServer/pushBus";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -270,7 +270,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const providerStatuses = yield* providerHealth.getStatuses;
 
-  const clients = yield* Ref.make(new Set<WebSocket>());
   const logger = createLogger("ws");
 
   function logOutgoingPush(push: WsPush, recipients: number) {
@@ -282,18 +281,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     });
   }
 
-  const encodePush = Schema.encodeEffect(Schema.fromJsonString(WsPush));
-  const broadcastPush = Effect.fnUntraced(function* (push: WsPush) {
-    const message = yield* encodePush(push);
-    let recipients = 0;
-    for (const client of yield* Ref.get(clients)) {
-      if (client.readyState === client.OPEN) {
-        client.send(message);
-        recipients += 1;
-      }
-    }
-    logOutgoingPush(push, recipients);
+  const encodePush = Schema.encodeSync(Schema.fromJsonString(WsPush));
+  const pushBus = createPushBus({
+    encodePush,
+    onPublish: logOutgoingPush,
   });
+  const broadcastPush = (push: WsPush) =>
+    Effect.sync(() => {
+      pushBus.publishAll(push);
+    });
 
   const onTerminalEvent = Effect.fnUntraced(function* (event: TerminalEvent) {
     yield* broadcastPush({
@@ -601,10 +597,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     });
   });
 
-  const closeAllClients = Ref.get(clients).pipe(
-    Effect.flatMap(Effect.forEach((client) => Effect.sync(() => client.close()))),
-    Effect.flatMap(() => Ref.set(clients, new Set())),
-  );
+  const closeAllClients = Effect.sync(() => {
+    wss.clients.forEach((client) => client.close());
+  });
 
   const listenOptions = host ? { host, port } : { port };
 
@@ -968,7 +963,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   });
 
   wss.on("connection", (ws) => {
-    void runPromise(Ref.update(clients, (clients) => clients.add(ws)));
+    pushBus.registerPreWelcome(ws);
+
+    ws.on("message", (raw) => {
+      void runPromise(
+        handleMessage(ws, raw).pipe(
+          Effect.catch((error) => Effect.logError("Error handling message", error)),
+        ),
+      );
+    });
 
     const segments = cwd.split(/[/\\]/).filter(Boolean);
     const projectName = segments[segments.length - 1] ?? "project";
@@ -983,33 +986,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         ...(welcomeBootstrapThreadId ? { bootstrapThreadId: welcomeBootstrapThreadId } : {}),
       },
     };
-    logOutgoingPush(welcome, 1);
-    ws.send(JSON.stringify(welcome));
-
-    ws.on("message", (raw) => {
-      void runPromise(
-        handleMessage(ws, raw).pipe(
-          Effect.catch((error) => Effect.logError("Error handling message", error)),
-        ),
-      );
-    });
+    pushBus.publishAll(welcome);
+    pushBus.activate(ws);
 
     ws.on("close", () => {
-      void runPromise(
-        Ref.update(clients, (clients) => {
-          clients.delete(ws);
-          return clients;
-        }),
-      );
+      pushBus.unregister(ws);
     });
 
     ws.on("error", () => {
-      void runPromise(
-        Ref.update(clients, (clients) => {
-          clients.delete(ws);
-          return clients;
-        }),
-      );
+      pushBus.unregister(ws);
     });
   });
 

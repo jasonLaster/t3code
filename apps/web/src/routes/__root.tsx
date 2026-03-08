@@ -187,15 +187,56 @@ function EventRouter() {
 
     void syncSnapshot().catch(() => undefined);
 
-    const unsubDomainEvent = api.orchestration.onDomainEvent((event) => {
+    const handleDomainEvent = async (event: { type: string; sequence: number }) => {
       if (event.sequence <= latestSequence) {
         return;
       }
-      latestSequence = event.sequence;
+
+      if (event.sequence > latestSequence + 1) {
+        try {
+          const replayed = await api.orchestration.replayEvents(latestSequence);
+          if (disposed) {
+            return;
+          }
+          const ordered = replayed.toSorted((left, right) => left.sequence - right.sequence);
+          let cursor = latestSequence;
+          for (const replayedEvent of ordered) {
+            if (replayedEvent.sequence <= cursor) {
+              continue;
+            }
+            if (replayedEvent.sequence !== cursor + 1) {
+              await syncSnapshot();
+              return;
+            }
+            cursor = replayedEvent.sequence;
+            if (
+              replayedEvent.type === "thread.turn-diff-completed" ||
+              replayedEvent.type === "thread.reverted"
+            ) {
+              void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
+            }
+          }
+          if (cursor < event.sequence - 1) {
+            await syncSnapshot();
+            return;
+          }
+          latestSequence = Math.max(cursor, event.sequence);
+        } catch {
+          await syncSnapshot();
+          return;
+        }
+      } else {
+        latestSequence = event.sequence;
+      }
+
       if (event.type === "thread.turn-diff-completed" || event.type === "thread.reverted") {
         void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
       }
-      void syncSnapshot();
+      await syncSnapshot();
+    };
+
+    const unsubDomainEvent = api.orchestration.onDomainEvent((event) => {
+      void handleDomainEvent(event).catch(() => undefined);
     });
     const unsubTerminalEvent = api.terminal.onEvent((event) => {
       const hasRunningSubprocess = terminalRunningSubprocessFromEvent(event);

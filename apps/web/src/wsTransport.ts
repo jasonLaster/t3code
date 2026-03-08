@@ -4,9 +4,16 @@ import { Cause, Schema } from "effect";
 type PushListener = (data: unknown) => void;
 
 interface PendingRequest {
+  method: string;
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+}
+
+interface QueuedRequest {
+  id: string;
+  payload: string;
+  cancelled: boolean;
 }
 
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -32,6 +39,8 @@ export class WsTransport {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
   private readonly url: string;
+  private readonly outboundQueue: QueuedRequest[] = [];
+  private readonly queuedRequestById = new Map<string, QueuedRequest>();
 
   constructor(url?: string) {
     const bridgeUrl = window.desktopBridge?.getWsUrl();
@@ -58,11 +67,13 @@ export class WsTransport {
 
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
+        this.cancelQueuedRequest(id);
         this.pending.delete(id);
         reject(new Error(`Request timed out: ${method}`));
       }, REQUEST_TIMEOUT_MS);
 
       this.pending.set(id, {
+        method,
         resolve: resolve as (result: unknown) => void,
         reject,
         timeout,
@@ -99,6 +110,8 @@ export class WsTransport {
       pending.reject(new Error("Transport disposed"));
     }
     this.pending.clear();
+    this.outboundQueue.length = 0;
+    this.queuedRequestById.clear();
     this.ws?.close();
     this.ws = null;
   }
@@ -111,6 +124,7 @@ export class WsTransport {
     ws.addEventListener("open", () => {
       this.ws = ws;
       this.reconnectAttempt = 0;
+      this.flushQueue();
     });
 
     ws.addEventListener("message", (event) => {
@@ -173,28 +187,45 @@ export class WsTransport {
   }
 
   private send(message: WsRequestEnvelope) {
+    const payload = JSON.stringify(message);
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
+      this.ws.send(payload);
       return;
     }
 
-    // If not connected, wait for connection
-    const waitForOpen = () => {
-      const check = setInterval(() => {
-        if (this.disposed) {
-          clearInterval(check);
-          return;
-        }
-        if (this.ws?.readyState === WebSocket.OPEN) {
-          clearInterval(check);
-          this.ws.send(JSON.stringify(message));
-        }
-      }, 50);
-
-      // Give up after timeout (the pending request will time out on its own)
-      setTimeout(() => clearInterval(check), REQUEST_TIMEOUT_MS);
+    const queued: QueuedRequest = {
+      id: message.id,
+      payload,
+      cancelled: false,
     };
-    waitForOpen();
+    this.queuedRequestById.set(message.id, queued);
+    this.outboundQueue.push(queued);
+  }
+
+  private cancelQueuedRequest(id: string) {
+    const queued = this.queuedRequestById.get(id);
+    if (!queued) return;
+    queued.cancelled = true;
+    this.queuedRequestById.delete(id);
+  }
+
+  private flushQueue() {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    while (this.outboundQueue.length > 0) {
+      const queued = this.outboundQueue.shift();
+      if (!queued) continue;
+      this.queuedRequestById.delete(queued.id);
+      if (queued.cancelled) {
+        continue;
+      }
+      if (!this.pending.has(queued.id)) {
+        continue;
+      }
+      this.ws.send(queued.payload);
+    }
   }
 
   private scheduleReconnect() {

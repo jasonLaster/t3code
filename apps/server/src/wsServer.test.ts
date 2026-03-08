@@ -29,7 +29,12 @@ import {
   type ResolvedKeybindingsConfig,
   type WsPush,
 } from "@t3tools/contracts";
-import { compileResolvedKeybindingRule, DEFAULT_KEYBINDINGS } from "./keybindings";
+import {
+  compileResolvedKeybindingRule,
+  DEFAULT_KEYBINDINGS,
+  Keybindings,
+  type KeybindingsShape,
+} from "./keybindings";
 import type {
   TerminalClearInput,
   TerminalCloseInput,
@@ -396,6 +401,7 @@ describe("WebSocket Server", () => {
       gitManager?: GitManagerShape;
       gitCore?: Pick<GitCoreShape, "listBranches" | "initRepo" | "pullCurrentBranch">;
       terminalManager?: TerminalManagerShape;
+      keybindings?: KeybindingsShape;
     } = {},
   ): Promise<Http.Server> {
     if (serverScope) {
@@ -434,6 +440,7 @@ describe("WebSocket Server", () => {
       options.terminalManager
         ? Layer.succeed(TerminalManager, options.terminalManager)
         : Layer.empty,
+      options.keybindings ? Layer.succeed(Keybindings, options.keybindings) : Layer.empty,
     );
 
     const runtimeLayer = Layer.merge(
@@ -1028,6 +1035,74 @@ describe("WebSocket Server", () => {
     );
   });
 
+
+  it("delivers welcome first while preserving request-triggered pushes during handshake", async () => {
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const ws = await connectWs(port);
+    connections.push(ws);
+
+    const requestId = crypto.randomUUID();
+    ws.send(
+      JSON.stringify({
+        id: requestId,
+        body: {
+          _tag: WS_METHODS.terminalOpen,
+          threadId: "thread-immediate",
+          cwd: "/tmp",
+        },
+      }),
+    );
+
+    const firstMessage = (await waitForMessage(ws)) as WsPush;
+    expect(firstMessage.type).toBe("push");
+    expect(firstMessage.channel).toBe(WS_CHANNELS.serverWelcome);
+
+    const terminalPush = await waitForPush(
+      ws,
+      WS_CHANNELS.terminalEvent,
+      (push) =>
+        typeof push.data === "object" &&
+        push.data !== null &&
+        (push.data as { type?: string }).type === "started",
+    );
+    expect((terminalPush.data as { threadId: string }).threadId).toBe("thread-immediate");
+
+    const response = await waitForMessage(ws);
+    const asResponse = asWebSocketResponse(response);
+    if (!asResponse) {
+      throw new Error("Expected a websocket response envelope");
+    }
+    expect(asResponse.id).toBe(requestId);
+    expect(asResponse.error).toBeUndefined();
+  });
+
+  it("continues server startup when keybindings default sync fails", async () => {
+    const keybindings: KeybindingsShape = {
+      syncDefaultKeybindingsOnStartup: Effect.die("simulated keybindings startup failure"),
+      loadConfigState: Effect.succeed({
+        keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+        issues: [],
+      }),
+      changes: Stream.empty,
+      upsertKeybindingRule: () => Effect.succeed(DEFAULT_RESOLVED_KEYBINDINGS),
+    };
+
+    server = await createTestServer({ cwd: "/test", keybindings });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const ws = await connectWs(port);
+    connections.push(ws);
+
+    const welcome = (await waitForMessage(ws)) as WsPush;
+    expect(welcome.channel).toBe(WS_CHANNELS.serverWelcome);
+
+    const response = await sendRequest(ws, WS_METHODS.serverGetConfig);
+    expect(response.error).toBeUndefined();
+  });
   it("returns error for unknown methods", async () => {
     server = await createTestServer({ cwd: "/test" });
     const addr = server.address();

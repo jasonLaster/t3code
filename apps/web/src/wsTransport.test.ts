@@ -172,4 +172,41 @@ describe("WsTransport", () => {
 
     transport.dispose();
   });
+
+  it("does not send a timed-out queued request after reconnect", async () => {
+    vi.useFakeTimers();
+
+    const transport = new WsTransport("ws://localhost:3020");
+    const initialSocket = getSocket();
+
+    const timedOutRequest = transport.request("projects.list");
+    expect(initialSocket.sent).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await expect(timedOutRequest).rejects.toThrow("Request timed out: projects.list");
+
+    initialSocket.open();
+    expect(initialSocket.sent).toHaveLength(0);
+
+    transport.dispose();
+    vi.useRealTimers();
+  });
+
+  it("dispose clears queued requests so reconnect flush does not send stale entries", async () => {
+    vi.useFakeTimers();
+
+    const transport = new WsTransport("ws://localhost:3020");
+    const initialSocket = getSocket();
+
+    const request = transport.request("projects.list");
+    expect(initialSocket.sent).toHaveLength(0);
+
+    transport.dispose();
+    await expect(request).rejects.toThrow("Transport disposed");
+
+    initialSocket.open();
+    expect(initialSocket.sent).toHaveLength(0);
+
+    vi.useRealTimers();
+  });
 });
