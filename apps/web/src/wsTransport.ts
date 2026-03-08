@@ -17,6 +17,11 @@ interface PendingRequest {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+interface OutboundQueuedRequest {
+  id: string;
+  encodedMessage: string;
+}
+
 interface SubscribeOptions {
   readonly replayLatest?: boolean;
 }
@@ -130,7 +135,7 @@ export class WsTransport {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly listeners = new Map<string, Set<(message: WsPush) => void>>();
   private readonly latestPushByChannel = new Map<string, WsPush>();
-  private readonly outboundQueue: string[] = [];
+  private readonly outboundQueue: OutboundQueuedRequest[] = [];
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
@@ -163,6 +168,7 @@ export class WsTransport {
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
+        this.dropQueuedRequest(id);
         reject(new Error(`Request timed out: ${method}`));
       }, REQUEST_TIMEOUT_MS);
 
@@ -172,7 +178,7 @@ export class WsTransport {
         timeout,
       });
 
-      this.send(encoded);
+      this.send({ id, encodedMessage: encoded });
     });
   }
 
@@ -312,12 +318,12 @@ export class WsTransport {
     pending.resolve(message.result);
   }
 
-  private send(encodedMessage: string) {
+  private send(request: OutboundQueuedRequest) {
     if (this.disposed) {
       return;
     }
 
-    this.outboundQueue.push(encodedMessage);
+    this.outboundQueue.push(request);
     try {
       this.flushQueue();
     } catch {
@@ -331,17 +337,28 @@ export class WsTransport {
     }
 
     while (this.outboundQueue.length > 0) {
-      const message = this.outboundQueue.shift();
-      if (!message) {
+      const request = this.outboundQueue.shift();
+      if (!request) {
+        continue;
+      }
+      if (!this.pending.has(request.id)) {
         continue;
       }
       try {
-        this.ws.send(message);
+        this.ws.send(request.encodedMessage);
       } catch (error) {
-        this.outboundQueue.unshift(message);
+        this.outboundQueue.unshift(request);
         throw asError(error, "Failed to send WebSocket request.");
       }
     }
+  }
+
+  private dropQueuedRequest(id: string) {
+    const index = this.outboundQueue.findIndex((queued) => queued.id === id);
+    if (index < 0) {
+      return;
+    }
+    this.outboundQueue.splice(index, 1);
   }
 
   private scheduleReconnect() {

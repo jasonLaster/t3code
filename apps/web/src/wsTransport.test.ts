@@ -192,6 +192,41 @@ describe("WsTransport", () => {
     transport.dispose();
   });
 
+
+  it("does not flush timed out requests after reconnect", async () => {
+    vi.useFakeTimers();
+
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+
+    const requestPromise = transport.request("projects.list");
+    expect(socket.sent).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await expect(requestPromise).rejects.toThrow("Request timed out: projects.list");
+
+    socket.open();
+    expect(socket.sent).toHaveLength(0);
+
+    transport.dispose();
+    vi.useRealTimers();
+  });
+
+
+  it("does not flush queued requests after transport dispose", async () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+
+    const requestPromise = transport.request("projects.list");
+    expect(socket.sent).toHaveLength(0);
+
+    transport.dispose();
+    await expect(requestPromise).rejects.toThrow("Transport disposed");
+
+    socket.open();
+    expect(socket.sent).toHaveLength(0);
+  });
+
   it("queues requests until the websocket opens", async () => {
     const transport = new WsTransport("ws://localhost:3020");
     const socket = getSocket();

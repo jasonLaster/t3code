@@ -22,6 +22,7 @@ import { terminalRunningSubprocessFromEvent } from "../terminalActivity";
 import { onServerConfigUpdated, onServerWelcome } from "../wsNativeApi";
 import { providerQueryKeys } from "../lib/providerReactQuery";
 import { collectActiveTerminalThreadIds } from "../lib/terminalStateCleanup";
+import { createDomainEventRecoveryQueue } from "../orchestrationGapRecovery";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -187,15 +188,21 @@ function EventRouter() {
 
     void syncSnapshot().catch(() => undefined);
 
+    const domainEventRecovery = createDomainEventRecoveryQueue({
+      getLatestSequence: () => latestSequence,
+      setLatestSequence: (value) => {
+        latestSequence = value;
+      },
+      replayEvents: api.orchestration.replayEvents,
+      syncSnapshot,
+    });
+
     const unsubDomainEvent = api.orchestration.onDomainEvent((event) => {
-      if (event.sequence <= latestSequence) {
-        return;
-      }
-      latestSequence = event.sequence;
       if (event.type === "thread.turn-diff-completed" || event.type === "thread.reverted") {
         void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
       }
-      void syncSnapshot();
+
+      void domainEventRecovery.enqueue(event.sequence);
     });
     const unsubTerminalEvent = api.terminal.onEvent((event) => {
       const hasRunningSubprocess = terminalRunningSubprocessFromEvent(event);

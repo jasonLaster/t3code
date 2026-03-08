@@ -281,8 +281,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   });
   yield* readiness.markPushBusReady;
   yield* keybindingsManager.start.pipe(
-    Effect.mapError(
-      (cause) => new ServerLifecycleError({ operation: "keybindingsRuntimeStart", cause }),
+    Effect.catchAll((error) =>
+      Effect.sync(() => {
+        logger.warn("keybindings runtime failed to start; continuing with degraded behavior", {
+          error: error.message,
+        });
+      }),
     ),
   );
   yield* readiness.markKeybindingsReady;
@@ -961,14 +965,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ...(welcomeBootstrapProjectId ? { bootstrapProjectId: welcomeBootstrapProjectId } : {}),
       ...(welcomeBootstrapThreadId ? { bootstrapThreadId: welcomeBootstrapThreadId } : {}),
     };
-    // Send welcome before adding to broadcast set so publishAll calls
-    // cannot reach this client before the welcome arrives.
+    // Register pre-welcome clients immediately so publishAll traffic can be
+    // buffered and flushed after welcome without dropping handshake-time pushes.
     void runPromise(
-      readiness.awaitServerReady.pipe(
+      pushBus.registerClient(ws).pipe(
+        Effect.flatMap(() => readiness.awaitServerReady),
         Effect.flatMap(() => pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, welcomeData)),
-        Effect.flatMap((delivered) =>
-          delivered ? Ref.update(clients, (clients) => clients.add(ws)) : Effect.void,
-        ),
+        Effect.flatMap((delivered) => (delivered ? pushBus.markClientReady(ws) : Effect.void)),
       ),
     );
 
@@ -979,21 +982,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     });
 
     ws.on("close", () => {
-      void runPromise(
-        Ref.update(clients, (clients) => {
-          clients.delete(ws);
-          return clients;
-        }),
-      );
+      void runPromise(pushBus.removeClient(ws));
     });
 
     ws.on("error", () => {
-      void runPromise(
-        Ref.update(clients, (clients) => {
-          clients.delete(ws);
-          return clients;
-        }),
-      );
+      void runPromise(pushBus.removeClient(ws));
     });
   });
 

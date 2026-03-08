@@ -53,7 +53,7 @@ describe("makeServerPushBus", () => {
     scope = await Effect.runPromise(Scope.make("sequential"));
 
     const client = new MockWebSocket();
-    const { clients, pushBus } = await Effect.runPromise(
+    const { pushBus } = await Effect.runPromise(
       Effect.gen(function* () {
         const clients = yield* Ref.make(new Set<WebSocket>());
         const pushBus = yield* makeServerPushBus({
@@ -61,7 +61,7 @@ describe("makeServerPushBus", () => {
           logOutgoingPush: () => {},
         });
 
-        return { clients, pushBus };
+        return { pushBus };
       }).pipe(Scope.provide(scope)),
     );
 
@@ -71,6 +71,8 @@ describe("makeServerPushBus", () => {
           issues: [{ kind: "keybindings.malformed-config", message: "queued-before-connect" }],
           providers: [],
         });
+
+        yield* pushBus.registerClient(client as unknown as WebSocket);
 
         const delivered = yield* pushBus.publishClient(
           client as unknown as WebSocket,
@@ -82,7 +84,7 @@ describe("makeServerPushBus", () => {
         );
         expect(delivered).toBe(true);
 
-        yield* Ref.update(clients, (current) => current.add(client as unknown as WebSocket));
+        yield* pushBus.markClientReady(client as unknown as WebSocket);
 
         yield* pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
           issues: [],
@@ -91,13 +93,13 @@ describe("makeServerPushBus", () => {
       }),
     );
 
-    await client.waitForSentCount(2);
+    await client.waitForSentCount(3);
 
     const messages = client.sent.map(
       (message) => JSON.parse(message) as { channel: string; data: unknown },
     );
 
-    expect(messages).toHaveLength(2);
+    expect(messages).toHaveLength(3);
     expect(messages[0]).toEqual({
       type: "push",
       sequence: 2,
@@ -108,6 +110,15 @@ describe("makeServerPushBus", () => {
       },
     });
     expect(messages[1]).toEqual({
+      type: "push",
+      sequence: 1,
+      channel: WS_CHANNELS.serverConfigUpdated,
+      data: {
+        issues: [{ kind: "keybindings.malformed-config", message: "queued-before-connect" }],
+        providers: [],
+      },
+    });
+    expect(messages[2]).toEqual({
       type: "push",
       sequence: 3,
       channel: WS_CHANNELS.serverConfigUpdated,

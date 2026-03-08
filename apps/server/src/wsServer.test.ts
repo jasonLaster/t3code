@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Exit, Layer, PlatformError, PubSub, Scope, Stream } from "effect";
+import { Deferred, Effect, Exit, Layer, PlatformError, PubSub, Scope, Stream } from "effect";
 import { describe, expect, it, afterEach, vi } from "vitest";
 import { createServer } from "./wsServer";
 import WebSocket from "ws";
@@ -31,7 +31,12 @@ import {
   type WsPushMessage,
   type WsPush,
 } from "@t3tools/contracts";
-import { compileResolvedKeybindingRule, DEFAULT_KEYBINDINGS } from "./keybindings";
+import {
+  Keybindings,
+  type KeybindingsShape,
+  compileResolvedKeybindingRule,
+  DEFAULT_KEYBINDINGS,
+} from "./keybindings";
 import type {
   TerminalClearInput,
   TerminalCloseInput,
@@ -443,6 +448,22 @@ function compileKeybindings(bindings: KeybindingsConfig): ResolvedKeybindingsCon
 }
 
 const DEFAULT_RESOLVED_KEYBINDINGS = compileKeybindings([...DEFAULT_KEYBINDINGS]);
+
+
+function createKeybindingsStub(start: KeybindingsShape["start"]): KeybindingsShape {
+  const state = { keybindings: DEFAULT_RESOLVED_KEYBINDINGS, issues: [] } as const;
+  const changes = PubSub.unbounded<typeof state>();
+
+  return {
+    start,
+    ready: Effect.void,
+    syncDefaultKeybindingsOnStartup: Effect.void,
+    loadConfigState: Effect.succeed(state),
+    getSnapshot: Effect.succeed(state),
+    subscribeChanges: Effect.flatMap(changes, PubSub.subscribe),
+    upsertKeybindingRule: () => Effect.succeed([...DEFAULT_RESOLVED_KEYBINDINGS]),
+  };
+}
 const VALID_EDITOR_IDS = new Set(EDITORS.map((editor) => editor.id));
 
 function expectAvailableEditors(value: unknown): void {
@@ -484,6 +505,7 @@ describe("WebSocket Server", () => {
       gitManager?: GitManagerShape;
       gitCore?: Pick<GitCoreShape, "listBranches" | "initRepo" | "pullCurrentBranch">;
       terminalManager?: TerminalManagerShape;
+      keybindings?: KeybindingsShape;
     } = {},
   ): Promise<Http.Server> {
     if (serverScope) {
@@ -522,6 +544,7 @@ describe("WebSocket Server", () => {
       options.terminalManager
         ? Layer.succeed(TerminalManager, options.terminalManager)
         : Layer.empty,
+      options.keybindings ? Layer.succeed(Keybindings, options.keybindings) : Layer.empty,
     );
 
     const runtimeLayer = Layer.merge(
@@ -585,6 +608,62 @@ describe("WebSocket Server", () => {
     connections.push(ws);
 
     expect(welcome.type).toBe("push");
+    expect(welcome.data).toEqual({
+      cwd: "/test/project",
+      projectName: "project",
+    });
+  });
+
+
+  it("delivers request-triggered pushes sent before welcome completes", async () => {
+    const keybindingsStartGate = await Effect.runPromise(Deferred.make<void>());
+
+    server = await createTestServer({
+      cwd: "/test/project",
+      keybindings: createKeybindingsStub(Deferred.await(keybindingsStartGate)),
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const ws = await connectWs(port);
+    connections.push(ws);
+
+    const terminalOpenPromise = sendRequest(ws, WS_METHODS.terminalOpen, {
+      threadId: asThreadId("thread-handshake"),
+      cwd: "/test/project",
+    });
+
+    await Effect.runPromise(Deferred.succeed(keybindingsStartGate, undefined));
+
+    const welcome = await waitForPush(ws, WS_CHANNELS.serverWelcome);
+    expect(welcome.channel).toBe(WS_CHANNELS.serverWelcome);
+
+    const terminalStarted = await waitForPush(
+      ws,
+      WS_CHANNELS.terminalEvent,
+      (push) => push.data.type === "started",
+    );
+    expect(terminalStarted.data.type).toBe("started");
+
+    const terminalOpen = await terminalOpenPromise;
+    expect(terminalOpen.error).toBeUndefined();
+  });
+
+  it("continues server startup when keybindings runtime start fails", async () => {
+    server = await createTestServer({
+      cwd: "/test/project",
+      keybindings: createKeybindingsStub(
+        Effect.fail(new Error("forced keybindings start failure")) as KeybindingsShape["start"],
+      ),
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const [ws, welcome] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
     expect(welcome.data).toEqual({
       cwd: "/test/project",
       projectName: "project",
