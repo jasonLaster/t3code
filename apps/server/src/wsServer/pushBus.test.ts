@@ -1,6 +1,6 @@
 import type { WebSocket } from "ws";
 import { afterEach, describe, expect, it } from "vitest";
-import { Effect, Exit, Ref, Scope } from "effect";
+import { Effect, Exit, Scope } from "effect";
 import { WS_CHANNELS } from "@t3tools/contracts";
 
 import { makeServerPushBus } from "./pushBus";
@@ -49,26 +49,21 @@ describe("makeServerPushBus", () => {
     scope = null;
   });
 
-  it("waits for the welcome push before a new client joins broadcast delivery", async () => {
+  it("queues publishAll pushes for pre_welcome clients and flushes after activation", async () => {
     scope = await Effect.runPromise(Scope.make("sequential"));
 
     const client = new MockWebSocket();
-    const { clients, pushBus } = await Effect.runPromise(
-      Effect.gen(function* () {
-        const clients = yield* Ref.make(new Set<WebSocket>());
-        const pushBus = yield* makeServerPushBus({
-          clients,
-          logOutgoingPush: () => {},
-        });
-
-        return { clients, pushBus };
+    const pushBus = await Effect.runPromise(
+      makeServerPushBus({
+        logOutgoingPush: () => {},
       }).pipe(Scope.provide(scope)),
     );
 
     await Effect.runPromise(
       Effect.gen(function* () {
+        yield* pushBus.registerClient(client as unknown as WebSocket);
         yield* pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
-          issues: [{ kind: "keybindings.malformed-config", message: "queued-before-connect" }],
+          issues: [{ kind: "keybindings.malformed-config", message: "queued-before-welcome" }],
           providers: [],
         });
 
@@ -82,39 +77,35 @@ describe("makeServerPushBus", () => {
         );
         expect(delivered).toBe(true);
 
-        yield* Ref.update(clients, (current) => current.add(client as unknown as WebSocket));
-
-        yield* pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
-          issues: [],
-          providers: [],
-        });
+        yield* pushBus.activateClient(client as unknown as WebSocket);
       }),
     );
 
     await client.waitForSentCount(2);
 
     const messages = client.sent.map(
-      (message) => JSON.parse(message) as { channel: string; data: unknown },
+      (message) => JSON.parse(message) as { channel: string; data: unknown; sequence: number },
     );
 
-    expect(messages).toHaveLength(2);
-    expect(messages[0]).toEqual({
-      type: "push",
-      sequence: 2,
-      channel: WS_CHANNELS.serverWelcome,
-      data: {
-        cwd: "/tmp/project",
-        projectName: "project",
+    expect(messages).toEqual([
+      {
+        type: "push",
+        sequence: 2,
+        channel: WS_CHANNELS.serverWelcome,
+        data: {
+          cwd: "/tmp/project",
+          projectName: "project",
+        },
       },
-    });
-    expect(messages[1]).toEqual({
-      type: "push",
-      sequence: 3,
-      channel: WS_CHANNELS.serverConfigUpdated,
-      data: {
-        issues: [],
-        providers: [],
+      {
+        type: "push",
+        sequence: 1,
+        channel: WS_CHANNELS.serverConfigUpdated,
+        data: {
+          issues: [{ kind: "keybindings.malformed-config", message: "queued-before-welcome" }],
+          providers: [],
+        },
       },
-    });
+    ]);
   });
 });
