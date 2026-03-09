@@ -591,6 +591,43 @@ describe("WebSocket Server", () => {
     });
   });
 
+  it("delivers request-triggered pushes for requests sent immediately after open", async () => {
+    server = await createTestServer({ cwd: "/test/project" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const ws = await connectWs(port);
+    connections.push(ws);
+
+    const responsePromise = sendRequest(ws, WS_METHODS.terminalOpen, {
+      threadId: asThreadId("thread-1"),
+      cwd: "/test/project",
+    });
+
+    const welcome = await waitForPush(ws, WS_CHANNELS.serverWelcome);
+    const terminalEvent = await waitForPush(ws, WS_CHANNELS.terminalEvent, (push) => push.data.type === "started");
+    const response = await responsePromise;
+
+    expect(welcome.channel).toBe(WS_CHANNELS.serverWelcome);
+    expect(terminalEvent.channel).toBe(WS_CHANNELS.terminalEvent);
+    expect(terminalEvent.sequence).toBeGreaterThan(welcome.sequence);
+    expect(response.id).toBeDefined();
+    expect(response.result).toEqual(expect.objectContaining({ threadId: "thread-1" }));
+  });
+
+
+  it("continues startup when keybindings runtime bootstrap fails", async () => {
+    server = await createTestServer({ cwd: "/test/project", stateDir: "/dev/null" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const [ws, welcome] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    expect(welcome.channel).toBe(WS_CHANNELS.serverWelcome);
+  });
+
   it("serves persisted attachments from stateDir", async () => {
     const stateDir = makeTempDir("t3code-state-attachments-");
     const attachmentPath = path.join(stateDir, "attachments", "thread-a", "message-a", "0.png");

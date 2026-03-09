@@ -12,9 +12,15 @@ import { Schema, SchemaIssue } from "effect";
 type PushListener<C extends WsPushChannel> = (message: WsPushMessage<C>) => void;
 
 interface PendingRequest {
+  method: string;
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+}
+
+interface OutboundRequest {
+  id: string;
+  encoded: string;
 }
 
 interface SubscribeOptions {
@@ -130,7 +136,7 @@ export class WsTransport {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly listeners = new Map<string, Set<(message: WsPush) => void>>();
   private readonly latestPushByChannel = new Map<string, WsPush>();
-  private readonly outboundQueue: string[] = [];
+  private readonly outboundQueue: OutboundRequest[] = [];
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
@@ -162,17 +168,23 @@ export class WsTransport {
 
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending) {
+          return;
+        }
         this.pending.delete(id);
+        this.removeQueuedRequest(id);
         reject(new Error(`Request timed out: ${method}`));
       }, REQUEST_TIMEOUT_MS);
 
       this.pending.set(id, {
+        method,
         resolve: resolve as (result: unknown) => void,
         reject,
         timeout,
       });
 
-      this.send(encoded);
+      this.send({ id, encoded });
     });
   }
 
@@ -312,12 +324,12 @@ export class WsTransport {
     pending.resolve(message.result);
   }
 
-  private send(encodedMessage: string) {
+  private send(entry: OutboundRequest) {
     if (this.disposed) {
       return;
     }
 
-    this.outboundQueue.push(encodedMessage);
+    this.outboundQueue.push(entry);
     try {
       this.flushQueue();
     } catch {
@@ -335,13 +347,24 @@ export class WsTransport {
       if (!message) {
         continue;
       }
+      if (!this.pending.has(message.id)) {
+        continue;
+      }
       try {
-        this.ws.send(message);
+        this.ws.send(message.encoded);
       } catch (error) {
         this.outboundQueue.unshift(message);
         throw asError(error, "Failed to send WebSocket request.");
       }
     }
+  }
+
+  private removeQueuedRequest(requestId: string) {
+    const index = this.outboundQueue.findIndex((entry) => entry.id === requestId);
+    if (index < 0) {
+      return;
+    }
+    this.outboundQueue.splice(index, 1);
   }
 
   private scheduleReconnect() {

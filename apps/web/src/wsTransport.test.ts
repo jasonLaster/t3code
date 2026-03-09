@@ -81,6 +81,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.WebSocket = originalWebSocket;
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -211,5 +212,40 @@ describe("WsTransport", () => {
 
     await expect(requestPromise).resolves.toEqual({ projects: [] });
     transport.dispose();
+  });
+
+  it("does not send timed-out queued requests after reconnect", async () => {
+    vi.useFakeTimers();
+
+    const transport = new WsTransport("ws://localhost:3020");
+    const firstSocket = getSocket();
+    firstSocket.open();
+    firstSocket.close();
+
+    const requestPromise = transport.request("projects.list");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await expect(requestPromise).rejects.toThrow("Request timed out: projects.list");
+
+    await vi.advanceTimersByTimeAsync(500);
+    const secondSocket = getSocket();
+    secondSocket.open();
+
+    expect(secondSocket.sent).toHaveLength(0);
+    transport.dispose();
+  });
+
+  it("rejects and purges queued requests on dispose", async () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+
+    const requestPromise = transport.request("projects.list");
+    expect(socket.sent).toHaveLength(0);
+
+    transport.dispose();
+
+    await expect(requestPromise).rejects.toThrow("Transport disposed");
+    socket.open();
+    expect(socket.sent).toHaveLength(0);
   });
 });

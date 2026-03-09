@@ -187,8 +187,27 @@ function EventRouter() {
 
     void syncSnapshot().catch(() => undefined);
 
+    const recoverOrchestrationGap = async (fromSequenceExclusive: number) => {
+      try {
+        const replayed = await api.orchestration.replayEvents(fromSequenceExclusive);
+        if (disposed) {
+          return;
+        }
+        for (const replayedEvent of replayed) {
+          latestSequence = Math.max(latestSequence, replayedEvent.sequence);
+        }
+      } catch {
+        // Fall back to snapshot sync when replay is unavailable.
+      }
+      await syncSnapshot();
+    };
+
     const unsubDomainEvent = api.orchestration.onDomainEvent((event) => {
       if (event.sequence <= latestSequence) {
+        return;
+      }
+      if (event.sequence > latestSequence + 1) {
+        void recoverOrchestrationGap(latestSequence).catch(() => undefined);
         return;
       }
       latestSequence = event.sequence;

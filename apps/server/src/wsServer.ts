@@ -35,7 +35,6 @@ import {
   Layer,
   Path,
   PubSub,
-  Ref,
   Schema,
   Scope,
   ServiceMap,
@@ -261,7 +260,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const providerStatuses = yield* providerHealth.getStatuses;
 
-  const clients = yield* Ref.make(new Set<WebSocket>());
   const logger = createLogger("ws");
   const readiness = yield* makeServerReadiness;
 
@@ -276,13 +274,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   }
 
   const pushBus = yield* makeServerPushBus({
-    clients,
     logOutgoingPush,
   });
   yield* readiness.markPushBusReady;
   yield* keybindingsManager.start.pipe(
-    Effect.mapError(
-      (cause) => new ServerLifecycleError({ operation: "keybindingsRuntimeStart", cause }),
+    Effect.catchAllCause((cause) =>
+      Effect.logWarning("keybindings runtime failed to start; continuing server bootstrap", {
+        error: Cause.pretty(cause),
+      }),
     ),
   );
   yield* readiness.markKeybindingsReady;
@@ -582,10 +581,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     });
   });
 
-  const closeAllClients = Ref.get(clients).pipe(
-    Effect.flatMap(Effect.forEach((client) => Effect.sync(() => client.close()))),
-    Effect.flatMap(() => Ref.set(clients, new Set())),
-  );
+  const closeAllClients = Effect.sync(() => {
+    wss.clients.forEach((client) => {
+      client.close();
+    });
+  });
 
   const listenOptions = host ? { host, port } : { port };
 
@@ -961,15 +961,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ...(welcomeBootstrapProjectId ? { bootstrapProjectId: welcomeBootstrapProjectId } : {}),
       ...(welcomeBootstrapThreadId ? { bootstrapThreadId: welcomeBootstrapThreadId } : {}),
     };
-    // Send welcome before adding to broadcast set so publishAll calls
-    // cannot reach this client before the welcome arrives.
     void runPromise(
-      readiness.awaitServerReady.pipe(
-        Effect.flatMap(() => pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, welcomeData)),
-        Effect.flatMap((delivered) =>
-          delivered ? Ref.update(clients, (clients) => clients.add(ws)) : Effect.void,
-        ),
-      ),
+      Effect.gen(function* () {
+        yield* pushBus.registerClient(ws);
+        yield* readiness.awaitServerReady;
+        yield* pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, welcomeData);
+        yield* pushBus.activateClient(ws);
+      }),
     );
 
     ws.on("message", (raw) => {
@@ -979,21 +977,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     });
 
     ws.on("close", () => {
-      void runPromise(
-        Ref.update(clients, (clients) => {
-          clients.delete(ws);
-          return clients;
-        }),
-      );
+      void runPromise(pushBus.unregisterClient(ws));
     });
 
     ws.on("error", () => {
-      void runPromise(
-        Ref.update(clients, (clients) => {
-          clients.delete(ws);
-          return clients;
-        }),
-      );
+      void runPromise(pushBus.unregisterClient(ws));
     });
   });
 
