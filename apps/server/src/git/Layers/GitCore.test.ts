@@ -21,7 +21,7 @@ const GitCoreTestLayer = GitCoreLive.pipe(
   Layer.provide(NodeServices.layer),
 );
 const TestLayer = Layer.mergeAll(NodeServices.layer, GitServiceTestLayer, GitCoreTestLayer);
-
+const ASYNC_GIT_WAIT_TIMEOUT_MS = 15_000;
 function makeTmpDir(
   prefix = "git-test-",
 ): Effect.Effect<string, PlatformError.PlatformError, FileSystem.FileSystem | Scope.Scope> {
