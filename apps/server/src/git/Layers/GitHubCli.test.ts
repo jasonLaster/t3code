@@ -18,6 +18,72 @@ afterEach(() => {
 });
 
 layer("GitHubCliLive", (it) => {
+  it.effect("lists repository pull requests", () =>
+    Effect.gen(function* () {
+      mockedRunProcess.mockResolvedValueOnce({
+        stdout: JSON.stringify([
+          {
+            number: 42,
+            title: "Add PR thread creation",
+            url: "https://github.com/pingdotgg/codething-mvp/pull/42",
+            baseRefName: "main",
+            headRefName: "feature/pr-threads",
+            state: "OPEN",
+            mergedAt: null,
+            isCrossRepository: true,
+            headRepository: {
+              nameWithOwner: "octocat/codething-mvp",
+            },
+            headRepositoryOwner: {
+              login: "octocat",
+            },
+          },
+        ]),
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      });
+
+      const result = yield* Effect.gen(function* () {
+        const gh = yield* GitHubCli;
+        return yield* gh.listPullRequests({
+          cwd: "/repo",
+          state: "open",
+          limit: 100,
+        });
+      });
+
+      assert.deepStrictEqual(result, [
+        {
+          number: 42,
+          title: "Add PR thread creation",
+          url: "https://github.com/pingdotgg/codething-mvp/pull/42",
+          baseRefName: "main",
+          headRefName: "feature/pr-threads",
+          state: "open",
+          isCrossRepository: true,
+          headRepositoryNameWithOwner: "octocat/codething-mvp",
+          headRepositoryOwnerLogin: "octocat",
+        },
+      ]);
+      expect(mockedRunProcess).toHaveBeenCalledWith(
+        "gh",
+        [
+          "pr",
+          "list",
+          "--state",
+          "open",
+          "--limit",
+          "100",
+          "--json",
+          "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
+        ],
+        expect.objectContaining({ cwd: "/repo" }),
+      );
+    }),
+  );
+
   it.effect("parses pull request view output", () =>
     Effect.gen(function* () {
       mockedRunProcess.mockResolvedValueOnce({

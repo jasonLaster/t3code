@@ -66,6 +66,24 @@ interface FakeGitTextGeneration {
 
 type FakePullRequest = NonNullable<FakeGhScenario["pullRequest"]>;
 
+function normalizeFakePullRequestSummary(
+  pullRequest: Omit<GitHubPullRequestSummary, "state"> & { state?: string | null },
+): GitHubPullRequestSummary {
+  const { state: _state, ...rest } = pullRequest;
+  const normalizedState =
+    pullRequest.state === "MERGED" || pullRequest.state === "merged"
+      ? "merged"
+      : pullRequest.state === "CLOSED" || pullRequest.state === "closed"
+        ? "closed"
+        : pullRequest.state === null || pullRequest.state === undefined
+          ? undefined
+          : "open";
+  return {
+    ...rest,
+    ...(normalizedState ? { state: normalizedState } : {}),
+  };
+}
+
 function runGitSyncForFakeGh(cwd: string, args: readonly string[]): void {
   const result = spawnSync("git", args, {
     cwd,
@@ -360,6 +378,27 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
   return {
     service: {
       execute,
+      listPullRequests: (input) =>
+        execute({
+          cwd: input.cwd,
+          args: [
+            "pr",
+            "list",
+            "--state",
+            input.state ?? "open",
+            "--limit",
+            String(input.limit ?? 30),
+            "--json",
+            "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
+          ],
+        }).pipe(
+          Effect.map(
+            (result) =>
+              (JSON.parse(result.stdout) as ReadonlyArray<GitHubPullRequestSummary>).map(
+                normalizeFakePullRequestSummary,
+              ),
+          ),
+        ),
       listOpenPullRequests: (input) =>
         execute({
           cwd: input.cwd,
@@ -373,11 +412,14 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
             "--limit",
             String(input.limit ?? 1),
             "--json",
-            "number,title,url,baseRefName,headRefName",
+            "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
           ],
         }).pipe(
           Effect.map(
-            (result) => JSON.parse(result.stdout) as ReadonlyArray<GitHubPullRequestSummary>,
+            (result) =>
+              (JSON.parse(result.stdout) as ReadonlyArray<GitHubPullRequestSummary>).map(
+                normalizeFakePullRequestSummary,
+              ),
           ),
         ),
       createPullRequest: (input) =>
@@ -460,6 +502,10 @@ function preparePullRequestThread(
   input: { cwd: string; reference: string; mode: "local" | "worktree" },
 ) {
   return manager.preparePullRequestThread(input);
+}
+
+function listBranchSelectorOptions(manager: GitManagerShape, input: { cwd: string }) {
+  return manager.listBranches(input);
 }
 
 function makeManager(input?: {
@@ -634,6 +680,73 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const status = yield* manager.status({ cwd: repoDir });
       expect(status.branch).toBe("feature/status-no-gh");
       expect(status.pr).toBeNull();
+    }),
+  );
+
+  it.effect("listBranches includes open pull requests and existing worktree paths", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/selector-pr"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/selector-pr"]);
+      yield* runGit(repoDir, ["checkout", "main"]);
+      const worktreePath = path.join(repoDir, "..", `selector-pr-${Date.now()}`);
+      yield* runGit(repoDir, ["worktree", "add", worktreePath, "feature/selector-pr"]);
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          prListSequence: [
+            JSON.stringify([
+              {
+                number: 61,
+                title: "Selector PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/61",
+                baseRefName: "main",
+                headRefName: "feature/selector-pr",
+                state: "OPEN",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const result = yield* listBranchSelectorOptions(manager, { cwd: repoDir });
+      expect(result.isRepo).toBe(true);
+      expect(result.pullRequests).toEqual([
+        {
+          number: 61,
+          title: "Selector PR",
+          url: "https://github.com/pingdotgg/codething-mvp/pull/61",
+          baseBranch: "main",
+          headBranch: "feature/selector-pr",
+          localBranchName: "feature/selector-pr",
+          state: "open",
+          worktreePath: fs.realpathSync.native(worktreePath),
+        },
+      ]);
+    }),
+  );
+
+  it.effect("listBranches falls back to plain branches when gh is unavailable", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          failWith: new GitHubCliError({
+            operation: "execute",
+            detail: "GitHub CLI (`gh`) is required but not available on PATH.",
+          }),
+        },
+      });
+
+      const result = yield* listBranchSelectorOptions(manager, { cwd: repoDir });
+      expect(result.isRepo).toBe(true);
+      expect(result.pullRequests).toEqual([]);
+      expect(result.branches.some((branch) => branch.name === "main")).toBe(true);
     }),
   );
 

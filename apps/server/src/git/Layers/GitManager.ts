@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 
 import { Effect, FileSystem, Layer, Path } from "effect";
+import type { GitBranch, GitBranchSelectorPullRequest } from "@t3tools/contracts";
 import {
   resolveAutoFeatureBranchName,
   sanitizeBranchFragment,
@@ -264,6 +265,67 @@ function toResolvedPullRequest(pr: {
     baseBranch: pr.baseRefName,
     headBranch: pr.headRefName,
     state: pr.state ?? "open",
+  };
+}
+
+function findExistingLocalPullRequestBranch(
+  branches: ReadonlyArray<GitBranch>,
+  pullRequest: ResolvedPullRequest & PullRequestHeadRemoteInfo,
+): GitBranch | null {
+  const localBranches = branches.filter((branch) => !branch.isRemote);
+  const preferredLocalBranchName = resolvePullRequestWorktreeLocalBranchName(pullRequest);
+
+  const preferredLocalBranch = localBranches.find(
+    (branch) => branch.name === preferredLocalBranchName,
+  );
+  if (preferredLocalBranch) {
+    return preferredLocalBranch;
+  }
+
+  if (preferredLocalBranchName === pullRequest.headBranch) {
+    return null;
+  }
+
+  return localBranches.find((branch) => branch.name === pullRequest.headBranch) ?? null;
+}
+
+function toBranchSelectorPullRequest(
+  branches: ReadonlyArray<GitBranch>,
+  pullRequestSummary: {
+    number: number;
+    title: string;
+    url: string;
+    baseRefName: string;
+    headRefName: string;
+    state?: "open" | "closed" | "merged";
+    isCrossRepository?: boolean;
+    headRepositoryNameWithOwner?: string | null;
+    headRepositoryOwnerLogin?: string | null;
+  },
+): GitBranchSelectorPullRequest {
+  const resolvedPullRequest = toResolvedPullRequest(pullRequestSummary);
+  const pullRequest = {
+    ...resolvedPullRequest,
+    ...toPullRequestHeadRemoteInfo(pullRequestSummary),
+  } as const;
+  const preferredLocalBranchName = resolvePullRequestWorktreeLocalBranchName(pullRequest);
+  const localBranch = findExistingLocalPullRequestBranch(branches, pullRequest);
+
+  return {
+    number: resolvedPullRequest.number,
+    title: resolvedPullRequest.title,
+    url: resolvedPullRequest.url,
+    baseBranch: resolvedPullRequest.baseBranch,
+    headBranch: resolvedPullRequest.headBranch,
+    localBranchName: localBranch?.name ?? preferredLocalBranchName,
+    state: resolvedPullRequest.state,
+    worktreePath: localBranch?.worktreePath ?? null,
+    ...(pullRequestSummary.isCrossRepository !== undefined
+      ? { isCrossRepository: pullRequestSummary.isCrossRepository }
+      : {}),
+    ...(pullRequestSummary.headRepositoryNameWithOwner !== undefined
+      ? { headRepositoryNameWithOwner: pullRequestSummary.headRepositoryNameWithOwner }
+      : {}),
   };
 }
 
@@ -655,6 +717,37 @@ export const makeGitManager = Effect.gen(function* () {
     };
   });
 
+  const listBranches: GitManagerShape["listBranches"] = Effect.fnUntraced(function* (input) {
+    const branchList = yield* gitCore.listBranches(input);
+    if (!branchList.isRepo) {
+      return branchList;
+    }
+
+    const pullRequests = yield* gitHubCli
+      .listPullRequests({
+        cwd: input.cwd,
+        state: "open",
+        limit: 100,
+      })
+      .pipe(
+        Effect.map((openPullRequests) =>
+          openPullRequests.map((pullRequest) =>
+            toBranchSelectorPullRequest(branchList.branches, pullRequest),
+          ),
+        ),
+        Effect.catch((error) =>
+          Effect.logWarning(
+            `GitManager.listBranches: failed to list GitHub pull requests for ${input.cwd}: ${error.message}. Falling back to branches only.`,
+          ).pipe(Effect.as([])),
+        ),
+      );
+
+    return {
+      ...branchList,
+      pullRequests,
+    };
+  });
+
   const resolvePullRequest: GitManagerShape["resolvePullRequest"] = Effect.fnUntraced(function* (
     input,
   ) {
@@ -901,6 +994,7 @@ export const makeGitManager = Effect.gen(function* () {
   );
 
   return {
+    listBranches,
     status,
     resolvePullRequest,
     preparePullRequestThread,

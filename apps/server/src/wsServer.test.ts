@@ -1572,10 +1572,11 @@ describe("WebSocket Server", () => {
     expect(fs.existsSync(path.join(workspace, "..", "escape.md"))).toBe(false);
   });
 
-  it("routes git core methods over websocket", async () => {
+  it("routes git branch selector metadata over websocket", async () => {
     const listBranches = vi.fn(() =>
       Effect.succeed({
         branches: [],
+        pullRequests: [],
         isRepo: false,
       }),
     );
@@ -1591,10 +1592,19 @@ describe("WebSocket Server", () => {
       ),
     );
 
+    const gitManager: GitManagerShape = {
+      listBranches,
+      status: vi.fn(() => Effect.void as any),
+      resolvePullRequest: vi.fn(() => Effect.void as any),
+      preparePullRequestThread: vi.fn(() => Effect.void as any),
+      runStackedAction: vi.fn(() => Effect.void as any),
+    };
+
     server = await createTestServer({
       cwd: "/test",
+      gitManager,
       gitCore: {
-        listBranches,
+        listBranches: vi.fn(() => Effect.void as any),
         initRepo,
         pullCurrentBranch,
       },
@@ -1608,7 +1618,7 @@ describe("WebSocket Server", () => {
 
     const listResponse = await sendRequest(ws, WS_METHODS.gitListBranches, { cwd: "/repo/path" });
     expect(listResponse.error).toBeUndefined();
-    expect(listResponse.result).toEqual({ branches: [], isRepo: false });
+    expect(listResponse.result).toEqual({ branches: [], pullRequests: [], isRepo: false });
     expect(listBranches).toHaveBeenCalledWith({ cwd: "/repo/path" });
 
     const initResponse = await sendRequest(ws, WS_METHODS.gitInit, { cwd: "/repo/path" });
@@ -1641,6 +1651,7 @@ describe("WebSocket Server", () => {
     const resolvePullRequest = vi.fn(() => Effect.void as any);
     const preparePullRequestThread = vi.fn(() => Effect.void as any);
     const gitManager: GitManagerShape = {
+      listBranches: vi.fn(() => Effect.void as any),
       status,
       resolvePullRequest,
       preparePullRequestThread,
@@ -1681,6 +1692,7 @@ describe("WebSocket Server", () => {
     };
 
     const gitManager: GitManagerShape = {
+      listBranches: vi.fn(() => Effect.void as any),
       status: vi.fn(() => Effect.void as any),
       resolvePullRequest: vi.fn(() => Effect.succeed(resolvePullRequestResult)),
       preparePullRequestThread: vi.fn(() => Effect.succeed(preparePullRequestThreadResult)),
@@ -1730,6 +1742,7 @@ describe("WebSocket Server", () => {
       ),
     );
     const gitManager: GitManagerShape = {
+      listBranches: vi.fn(() => Effect.void as any),
       status: vi.fn(() => Effect.void as any),
       resolvePullRequest: vi.fn(() => Effect.void as any),
       preparePullRequestThread: vi.fn(() => Effect.void as any),

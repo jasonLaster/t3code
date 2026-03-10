@@ -52,6 +52,15 @@ export interface GitHubCliShape {
   }) => Effect.Effect<ReadonlyArray<GitHubPullRequestSummary>, GitHubCliError>;
 
   /**
+   * List pull requests for the current repository.
+   */
+  readonly listPullRequests: (input: {
+    readonly cwd: string;
+    readonly state?: "open" | "closed" | "merged" | "all";
+    readonly limit?: number;
+  }) => Effect.Effect<ReadonlyArray<GitHubPullRequestSummary>, GitHubCliError>;
+
+  /**
    * Resolve a pull request by URL, number, or branch-ish identifier.
    */
   readonly getPullRequest: (input: {

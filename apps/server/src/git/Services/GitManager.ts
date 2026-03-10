@@ -7,6 +7,8 @@
  * @module GitManager
  */
 import {
+  GitListBranchesInput,
+  GitListBranchesResult,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
   GitPullRequestRefInput,
@@ -24,6 +26,13 @@ import type { GitManagerServiceError } from "../Errors.ts";
  * GitManagerShape - Service API for high-level Git workflow actions.
  */
 export interface GitManagerShape {
+  /**
+   * List branches plus open pull request selector metadata when available.
+   */
+  readonly listBranches: (
+    input: GitListBranchesInput,
+  ) => Effect.Effect<GitListBranchesResult, GitManagerServiceError>;
+
   /**
    * Read current repository Git status plus open PR metadata when available.
    */

@@ -34,6 +34,22 @@ export const GitBranch = Schema.Struct({
 });
 export type GitBranch = typeof GitBranch.Type;
 
+export const GitBranchSelectorPullRequest = Schema.Struct({
+  number: PositiveInt,
+  title: TrimmedNonEmptyStringSchema,
+  url: Schema.String,
+  baseBranch: TrimmedNonEmptyStringSchema,
+  headBranch: TrimmedNonEmptyStringSchema,
+  localBranchName: TrimmedNonEmptyStringSchema,
+  state: GitPullRequestState,
+  worktreePath: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
+  isCrossRepository: Schema.optional(Schema.Boolean),
+  headRepositoryNameWithOwner: Schema.optional(
+    Schema.NullOr(TrimmedNonEmptyStringSchema),
+  ),
+});
+export type GitBranchSelectorPullRequest = typeof GitBranchSelectorPullRequest.Type;
+
 const GitWorktree = Schema.Struct({
   path: TrimmedNonEmptyStringSchema,
   branch: TrimmedNonEmptyStringSchema,
@@ -152,6 +168,7 @@ export type GitStatusResult = typeof GitStatusResult.Type;
 
 export const GitListBranchesResult = Schema.Struct({
   branches: Schema.Array(GitBranch),
+  pullRequests: Schema.Array(GitBranchSelectorPullRequest),
   isRepo: Schema.Boolean,
 });
 export type GitListBranchesResult = typeof GitListBranchesResult.Type;

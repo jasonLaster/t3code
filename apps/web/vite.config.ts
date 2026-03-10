@@ -24,7 +24,13 @@ export default defineConfig({
     tailwindcss(),
   ],
   optimizeDeps: {
-    include: ["@pierre/diffs", "@pierre/diffs/react", "@pierre/diffs/worker/worker.js"],
+    include: [
+      "@pierre/diffs",
+      "@pierre/diffs/react",
+      "@pierre/diffs/worker/worker.js",
+      "react-dom",
+      "react-dom/client",
+    ],
   },
   define: {
     // In dev mode, tell the web app where the WebSocket server lives

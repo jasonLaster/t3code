@@ -146,7 +146,7 @@ function normalizeRepositoryCloneUrls(
 function decodeGitHubJson<S extends Schema.Top>(
   raw: string,
   schema: S,
-  operation: "listOpenPullRequests" | "getPullRequest" | "getRepositoryCloneUrls",
+  operation: "listOpenPullRequests" | "listPullRequests" | "getPullRequest" | "getRepositoryCloneUrls",
   invalidDetail: string,
 ): Effect.Effect<S["Type"], GitHubCliError, S["DecodingServices"]> {
   return Schema.decodeEffect(Schema.fromJsonString(schema))(raw).pipe(
@@ -174,6 +174,33 @@ const makeGitHubCli = Effect.sync(() => {
 
   const service = {
     execute,
+    listPullRequests: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "pr",
+          "list",
+          "--state",
+          input.state ?? "open",
+          "--limit",
+          String(input.limit ?? 1),
+          "--json",
+          "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
+        ],
+      }).pipe(
+        Effect.map((result) => result.stdout.trim()),
+        Effect.flatMap((raw) =>
+          raw.length === 0
+            ? Effect.succeed([])
+            : decodeGitHubJson(
+                raw,
+                Schema.Array(RawGitHubPullRequestSchema),
+                "listPullRequests",
+                "GitHub CLI returned invalid PR list JSON.",
+              ),
+        ),
+        Effect.map((pullRequests) => pullRequests.map(normalizePullRequestSummary)),
+      ),
     listOpenPullRequests: (input) =>
       execute({
         cwd: input.cwd,
@@ -187,7 +214,7 @@ const makeGitHubCli = Effect.sync(() => {
           "--limit",
           String(input.limit ?? 1),
           "--json",
-          "number,title,url,baseRefName,headRefName",
+          "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
         ],
       }).pipe(
         Effect.map((result) => result.stdout.trim()),
