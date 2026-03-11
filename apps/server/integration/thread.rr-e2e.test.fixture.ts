@@ -1,6 +1,6 @@
-import type { ReplayFixture, ReplayInteraction } from "./WebAppReplayHarness.ts";
+import type { Fixture, Interaction } from "./harness.ts";
 
-function baseGitInteractions(): ReadonlyArray<ReplayInteraction> {
+function baseGitInteractions(): ReadonlyArray<Interaction> {
   return [
     {
       name: "git status upstream",
@@ -176,7 +176,7 @@ function baseGitInteractions(): ReadonlyArray<ReplayInteraction> {
   ];
 }
 
-function turnInteraction(index: 1 | 2, prompt: string, answer: string): ReplayInteraction {
+function turnInteraction(index: 1 | 2, prompt: string, answer: string): Interaction {
   return {
     name: `codex turn start ${index}`,
     service: "codex.request",
@@ -228,7 +228,7 @@ function turnInteraction(index: 1 | 2, prompt: string, answer: string): ReplayIn
   };
 }
 
-function makeBaseFixture(): ReplayFixture {
+function makeBaseFixture(): Fixture {
   return {
     version: 1,
     state: {
@@ -257,11 +257,11 @@ const happyPath = {
     ...makeBaseFixture().interactions,
     turnInteraction(
       1,
-      "Explain how the replay harness works.",
-      "Replay harness response for the first message.\n",
+      "Explain how this harness works.",
+      "Harness response for the first message.\n",
     ),
   ],
-} satisfies ReplayFixture;
+} satisfies Fixture;
 
 const twoTurns = {
   ...makeBaseFixture(),
@@ -270,7 +270,7 @@ const twoTurns = {
     turnInteraction(1, "First question", "First assistant reply.\n"),
     turnInteraction(2, "Second question", "Second assistant reply.\n"),
   ],
-} satisfies ReplayFixture;
+} satisfies Fixture;
 
 const providerOffline = {
   ...makeBaseFixture(),
@@ -283,9 +283,9 @@ const providerOffline = {
       checkedAt: "2026-03-10T12:00:00.000Z",
     },
   ],
-} satisfies ReplayFixture;
+} satisfies Fixture;
 
-const fixtures: Record<string, ReplayFixture> = {
+const fixtures: Record<string, Fixture> = {
   bootstrap,
   happyPath,
   twoTurns,

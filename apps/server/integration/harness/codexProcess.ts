@@ -5,10 +5,10 @@ import type {
   CodexCliVersionCheckResult,
 } from "../../src/codexAppServerManager.ts";
 
-import type { ReplayFixture } from "./types.ts";
+import type { Fixture } from "./types.ts";
 
 export function makeReplayCodexProcessController(
-  fixture: ReplayFixture,
+  fixture: Fixture,
   state: Record<string, unknown>,
 ): CodexAppServerProcessController {
   const controller = createReplayJsonRpcProcessController(fixture, state, {

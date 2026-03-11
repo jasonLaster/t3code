@@ -17,7 +17,7 @@ import type { ProcessRunResult } from "../../src/processRunner.ts";
 import { type TerminalManagerShape } from "../../src/terminal/Services/Manager.ts";
 
 import { createReplayCliInvoker } from "@t3tools/rr-e2e";
-import type { ReplayFixture } from "./types.ts";
+import type { Fixture } from "./types.ts";
 
 export function defaultProviderStatuses(): ReadonlyArray<ServerProviderStatus> {
   return [
@@ -79,7 +79,7 @@ function replayGitHubCliFailure(operation: string, cause: unknown): GitHubCliErr
 }
 
 export function makeReplayGitService(
-  fixture: ReplayFixture,
+  fixture: Fixture,
   state: Record<string, unknown>,
 ): GitServiceShape {
   const invoke = createReplayCliInvoker(fixture, state);
@@ -96,7 +96,7 @@ export function makeReplayGitService(
 }
 
 export function makeReplayGitHubCli(
-  fixture: ReplayFixture,
+  fixture: Fixture,
   state: Record<string, unknown>,
 ): GitHubCliShape {
   const invoke = createReplayCliInvoker(fixture, state);

@@ -37,9 +37,9 @@ import {
   noOpOpenService,
   noOpTerminalManager,
 } from "./services.ts";
-import type { ReplayFixture } from "./types.ts";
+import type { Fixture } from "./types.ts";
 
-export interface WebAppReplayHarness {
+export interface Harness {
   readonly appUrl: string;
   readonly openPage: (
     browser: Browser,
@@ -48,8 +48,8 @@ export interface WebAppReplayHarness {
   readonly dispose: () => Promise<void>;
 }
 
-interface CreateWebAppReplayHarnessOptions {
-  readonly fixture?: ReplayFixture;
+interface CreateHarnessOptions {
+  readonly fixture?: Fixture;
   readonly fixtureName?: string;
 }
 
@@ -57,11 +57,12 @@ function webRootPath(): string {
   return path.resolve(fileURLToPath(new URL("../../../web", import.meta.url)));
 }
 
-export async function createWebAppReplayHarness(
+export async function createHarness(
   testFileUrl: string,
-  options?: CreateWebAppReplayHarnessOptions,
-): Promise<WebAppReplayHarness> {
-  const fixture = options?.fixture ?? (await readReplayFixture(testFileUrl, options?.fixtureName));
+  options?: CreateHarnessOptions,
+): Promise<Harness> {
+  const fixture =
+    options?.fixture ?? ((await readReplayFixture(testFileUrl, options?.fixtureName)) as Fixture);
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-web-replay-"));
   const workspaceDir = path.join(rootDir, "workspace");
   const stateDir = path.join(rootDir, "state");

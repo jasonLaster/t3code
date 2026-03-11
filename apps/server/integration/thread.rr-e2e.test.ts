@@ -3,14 +3,14 @@ import fs from "node:fs";
 import { chromium, type Page } from "playwright";
 import { describe, expect, it } from "vitest";
 
-import { createWebAppReplayHarness } from "./WebAppReplayHarness.ts";
+import { createHarness } from "./harness.ts";
 
 const shouldRunE2E = process.env.T3CODE_E2E === "1";
 const chromiumInstalled = fs.existsSync(chromium.executablePath());
 const STEP_TIMEOUT_MS = 10_000;
 
 async function runScenario(fixtureName: string, run: (page: Page) => Promise<void>): Promise<void> {
-  const harness = await createWebAppReplayHarness(import.meta.url, { fixtureName });
+  const harness = await createHarness(import.meta.url, { fixtureName });
   const browser = await chromium.launch({ headless: true });
   const { context, page } = await harness.openPage(browser, {
     viewport: { width: 1440, height: 1024 },
@@ -52,7 +52,7 @@ async function sendMessage(page: Page, prompt: string): Promise<void> {
   await page.getByRole("button", { name: "Send message" }).click();
 }
 
-describe("web app replay e2e", () => {
+describe("thread rr e2e", () => {
   it.skipIf(!shouldRunE2E || !chromiumInstalled)(
     "shows bootstrap state for a new workspace",
     async () => {
@@ -71,8 +71,8 @@ describe("web app replay e2e", () => {
         await createThread(page);
         const threadPath = new URL(page.url()).pathname;
 
-        await sendMessage(page, "Explain how the replay harness works.");
-        await page.getByText("Replay harness response for the first message.").waitFor({
+        await sendMessage(page, "Explain how this harness works.");
+        await page.getByText("Harness response for the first message.").waitFor({
           state: "visible",
           timeout: STEP_TIMEOUT_MS,
         });
@@ -87,13 +87,13 @@ describe("web app replay e2e", () => {
     "renders user prompt and assistant response in transcript",
     async () => {
       await runScenario("happyPath", async (page) => {
-        const prompt = "Explain how the replay harness works.";
+        const prompt = "Explain how this harness works.";
         await waitForBootstrap(page);
         await createThread(page);
         await sendMessage(page, prompt);
 
         await page.getByText(prompt).waitFor({ state: "visible", timeout: STEP_TIMEOUT_MS });
-        await page.getByText("Replay harness response for the first message.").waitFor({
+        await page.getByText("Harness response for the first message.").waitFor({
           state: "visible",
           timeout: STEP_TIMEOUT_MS,
         });
@@ -144,9 +144,9 @@ describe("web app replay e2e", () => {
       await runScenario("happyPath", async (page) => {
         await waitForBootstrap(page);
         await createThread(page);
-        await sendMessage(page, "Explain how the replay harness works.");
+        await sendMessage(page, "Explain how this harness works.");
 
-        await page.getByText("Replay harness response for the first message.").waitFor({
+        await page.getByText("Harness response for the first message.").waitFor({
           state: "visible",
           timeout: STEP_TIMEOUT_MS,
         });
