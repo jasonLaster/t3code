@@ -248,6 +248,15 @@ export const PeerLinkRequestAnswerInput = Schema.Struct({
     }),
     /** Answers with a machine this environment is already linked to, as it is. */
     Schema.Struct({ type: Schema.Literal("use-existing"), environmentId: EnvironmentId }),
+    /**
+     * Answers an SSH request: the user's desktop app connected the host and
+     * saved it as this environment. Only for a card that asked for SSH.
+     */
+    Schema.Struct({
+      type: Schema.Literal("ssh-connected"),
+      environmentId: EnvironmentId,
+      label: TrimmedNonEmptyString,
+    }),
     Schema.Struct({ type: Schema.Literal("decline") }),
   ]),
 });
@@ -257,6 +266,7 @@ const PEER_LINK_REQUEST_FAILURE_MESSAGES = {
   load_failed: "Could not load the link request.",
   not_found: "This link request no longer exists.",
   already_answered: "This link request was already answered.",
+  wrong_answer: "This answer does not fit the request. Reload and try again.",
   record_failed: "Could not update the link request.",
 } as const;
 

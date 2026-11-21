@@ -697,7 +697,11 @@ function itemSummary(
     case "secret_request":
       return item.label;
     case "link_request":
-      return resolve(msg("Link {target}", { target: linkRequestTargetName(item, resolve) }));
+      return item.ssh === undefined
+        ? resolve(msg("Link {target}", { target: linkRequestTargetName(item, resolve) }))
+        : resolve(
+            msg("Connect {target} over SSH", { target: linkRequestTargetName(item, resolve) }),
+          );
     case "dynamic_tool": {
       const classified = classifyToolActivity({
         itemType: "dynamic_tool_call",

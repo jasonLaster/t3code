@@ -2,6 +2,8 @@ import {
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
   OrchestrationV2StopWorkflowInput,
+  OrchestratorMcpEnvironmentAddSshInput,
+  OrchestratorMcpEnvironmentAddSshResult,
   OrchestratorMcpEnvironmentLinkInput,
   OrchestratorMcpEnvironmentLinkResult,
   OrchestratorMcpEnvironmentLinksResult,
@@ -348,6 +350,20 @@ const EnvironmentLinkTool = Tool.make("t3_environment_link", {
   .annotate(Tool.OpenWorld, true)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWhileLinksOff);
 
+// Not behind the Linked environments beta: SSH environments are a stable feature.
+const EnvironmentAddSshTool = Tool.make("t3_environment_add_ssh", {
+  description:
+    "Ask the user, in a card, to connect an SSH host they named as an environment in their desktop app. It signs in with their SSH config and keys; never ask for a password or key in chat. Returns `pending`; the outcome arrives as a message. Do not wait or call again to check.",
+  parameters: OrchestratorMcpEnvironmentAddSshInput,
+  success: OrchestratorMcpEnvironmentAddSshResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: linkingDependencies,
+})
+  .annotate(Tool.Title, "Connect an SSH environment")
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true);
+
 const EnvironmentUnlinkTool = Tool.make("t3_environment_unlink", {
   description:
     "Forget a linked environment. That machine's Connections list its session until revoked there.",
@@ -382,5 +398,6 @@ export const OrchestratorToolkit = Toolkit.make(
   ThreadInterruptTool,
   EnvironmentLinksTool,
   EnvironmentLinkTool,
+  EnvironmentAddSshTool,
   EnvironmentUnlinkTool,
 );

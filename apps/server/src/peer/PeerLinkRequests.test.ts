@@ -3,6 +3,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
+  EnvironmentId,
   EventId,
   MessageId,
   NodeId,
@@ -17,7 +18,7 @@ import {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
-import { expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -188,7 +189,15 @@ const makeLaptopWith = (
     );
     const here = yield* Layer.build(layerHere);
     const server = Context.get(here, McpServer.McpServer);
+    const callTool = (name: string, args: Record<string, unknown>, callScope = scope) =>
+      server
+        .callTool({ name, arguments: args })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, callScope),
+          Effect.provideService(McpSchema.McpServerClient, mcpClient),
+        );
     return {
+      callTool,
       links: Context.get(linking, PeerLinks.PeerLinks),
       linksSql: Context.get(linking, SqlClient.SqlClient),
       requests: Context.get(here, PeerLinkRequests.PeerLinkRequests),
@@ -197,12 +206,7 @@ const makeLaptopWith = (
       projections: Context.get(here, ProjectionStore.ProjectionStoreV2),
       sql: Context.get(database, SqlClient.SqlClient),
       call: (args: Record<string, unknown>, callScope = scope) =>
-        server
-          .callTool({ name: "t3_environment_link", arguments: args })
-          .pipe(
-            Effect.provideService(McpInvocationContext.McpInvocationContext, callScope),
-            Effect.provideService(McpSchema.McpServerClient, mcpClient),
-          ),
+        callTool("t3_environment_link", args, callScope),
     };
   });
 const makeLaptop = makeLaptopWith();
@@ -1490,3 +1494,213 @@ it.live("a card a newer link ended links nothing when answered after", () =>
     );
   }),
 );
+
+// An agent asks the user to connect an SSH host. The user's desktop app
+// connects it with its own SSH config and keys, then answers with the
+// environment it saved; the server never sees how it signed in.
+describe("t3_environment_add_ssh", () => {
+  const vm = EnvironmentId.make("environment-vm");
+  const withLaptop = <A, E, R>(
+    body: (a: Laptop) => Effect.Effect<A, E, R>,
+    wrapLinks?: (links: PeerLinks.PeerLinks["Service"]) => PeerLinks.PeerLinks["Service"],
+  ) =>
+    Effect.scoped(Effect.flatMap(makeLaptopWith(wrapLinks), body)).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+    );
+  const askSsh = (a: Laptop, args: Record<string, unknown>) =>
+    a.callTool("t3_environment_add_ssh", args);
+  const connectVm = (a: Laptop, turnItemId: TurnItemId) =>
+    a.requests.answer({
+      threadId,
+      turnItemId,
+      answer: { type: "ssh-connected", environmentId: vm, label: "t3-vm" },
+    });
+
+  it.live("shows a card for the host, and the desktop app's connection closes it", () =>
+    withLaptop((a) =>
+      Effect.gen(function* () {
+        yield* seedThread(a);
+        const asked = yield* askSsh(a, {
+          host: "54.69.21.185",
+          username: "ubuntu",
+          port: 22,
+          reason: "Run work on the cloud VM.",
+          clientRequestId: "ssh-vm",
+        });
+        const card = yield* pendingCard(a);
+        expect(asked.isError).toBe(false);
+        expect(asked.structuredContent).toEqual({ status: "pending", turnItemId: card.id });
+        expect(card).toMatchObject({
+          title: "Connect 54.69.21.185",
+          reason: "Run work on the cloud VM.",
+          ssh: { host: "54.69.21.185", username: "ubuntu", port: 22 },
+        });
+        expect(card.id).toContain("turn-item:ssh-request:");
+        expect(card.url).toBeUndefined();
+        expect(card.environmentId).toBeUndefined();
+        // Like a link card, it waits on the user, so the thread asks for input.
+        expect(
+          (yield* a.orchestrator.getThreadShell(threadId))?.pendingRuntimeRequest,
+        ).toMatchObject({ kind: "user_input" });
+
+        // The agent's turn ends; the user connects later from the card.
+        yield* endRun(a);
+        yield* connectVm(a, card.id);
+
+        expect(yield* cardOf(a)).toMatchObject({
+          status: "completed",
+          linkStatus: "linked",
+          linkedEnvironmentId: vm,
+          linkedLabel: "t3-vm",
+          ssh: { host: "54.69.21.185" },
+        });
+        expect((yield* cardOf(a)) as { linkedAccess?: unknown }).not.toHaveProperty("linkedAccess");
+        // Connecting over SSH links nothing: agents here reach no new machine.
+        expect(Option.isNone(yield* a.links.get(vm))).toBe(true);
+
+        const { messages } = yield* outcomeMessages(a);
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({
+          createdBy: "agent",
+          notification: { outcome: "completed", summary: "Connected t3-vm over SSH" },
+        });
+        expect(messages[0]!.text).toContain("ubuntu@54.69.21.185:22");
+        expect(messages[0]!.text).toContain(vm);
+
+        // A retry that lost the first result hears the outcome and records nothing.
+        const before = (yield* a.orchestrator.getThreadProjection(threadId)).turnItems.length;
+        const retried = yield* askSsh(a, { host: "54.69.21.185", clientRequestId: "ssh-vm" });
+        expect(retried.structuredContent).toEqual({
+          status: "connected",
+          environmentId: vm,
+          label: "t3-vm",
+        });
+        expect((yield* a.orchestrator.getThreadProjection(threadId)).turnItems).toHaveLength(
+          before,
+        );
+
+        const again = yield* connectVm(a, card.id).pipe(Effect.flip);
+        expect(again.reason).toBe("already_answered");
+      }),
+    ),
+  );
+
+  it.live("a declined card tells the agent, and a retry hears declined", () =>
+    withLaptop((a) =>
+      Effect.gen(function* () {
+        yield* seedThread(a);
+        yield* askSsh(a, { host: "t3-vm", clientRequestId: "ssh-decline" });
+        const card = yield* pendingCard(a);
+        yield* a.requests.answer({ threadId, turnItemId: card.id, answer: { type: "decline" } });
+        expect(yield* cardOf(a)).toMatchObject({ status: "cancelled", linkStatus: "declined" });
+        const { messages } = yield* outcomeMessages(a);
+        expect(messages[0]).toMatchObject({
+          notification: { outcome: "cancelled", summary: "Declined to connect t3-vm" },
+        });
+        const retried = yield* askSsh(a, { host: "t3-vm", clientRequestId: "ssh-decline" });
+        expect(retried.structuredContent).toEqual({ status: "declined" });
+      }),
+    ),
+  );
+
+  it.live("neither kind of card takes the other kind's answer", () =>
+    withLaptop((a) =>
+      Effect.gen(function* () {
+        yield* seedThread(a);
+        yield* askSsh(a, { host: "t3-vm", clientRequestId: "ssh-kind" });
+        const sshCard = yield* pendingCard(a);
+        const linked = yield* a.requests
+          .answer({
+            threadId,
+            turnItemId: sshCard.id,
+            answer: {
+              type: "link",
+              urls: ["https://box.example"],
+              access: "auto",
+              pairingCode: "x",
+            },
+          })
+          .pipe(Effect.flip);
+        expect(linked.reason).toBe("wrong_answer");
+        const existing = yield* a.requests
+          .answer({
+            threadId,
+            turnItemId: sshCard.id,
+            answer: { type: "use-existing", environmentId: vm },
+          })
+          .pipe(Effect.flip);
+        expect(existing.reason).toBe("wrong_answer");
+        expect(yield* cardOf(a)).toMatchObject({ linkStatus: "pending" });
+
+        yield* recordPendingCard(a, "plain-link");
+        const linkCardId = TurnItemId.make("turn-item:link-request:plain-link");
+        const connected = yield* connectVm(a, linkCardId).pipe(Effect.flip);
+        expect(connected.reason).toBe("wrong_answer");
+        const cards = (yield* a.orchestrator.getThreadProjection(threadId)).turnItems.filter(
+          (item) => item.type === "link_request",
+        );
+        expect(cards.map((item) => item.type === "link_request" && item.linkStatus)).toEqual([
+          "pending",
+          "pending",
+        ]);
+      }),
+    ),
+  );
+
+  it.live("works with the Linked environments beta off, which hides linking", () =>
+    withLaptop(
+      (a) =>
+        Effect.gen(function* () {
+          yield* seedThread(a);
+          const link = yield* a.call({ hint: "vm" });
+          expect(errorOf(link)).toMatchObject({ code: "capability_denied" });
+          const asked = yield* askSsh(a, { host: "t3-vm" });
+          expect(asked.isError).toBe(false);
+          expect(asked.structuredContent).toMatchObject({ status: "pending" });
+        }),
+      (links) => ({ ...links, enabled: Effect.succeed(false) }),
+    ),
+  );
+
+  it.live("needs a live run of the calling session, and a valid host", () =>
+    withLaptop((a) =>
+      Effect.gen(function* () {
+        const noThread = yield* a.callTool(
+          "t3_environment_add_ssh",
+          { host: "t3-vm" },
+          { ...scope, thread: undefined },
+        );
+        expect(noThread.isError).toBe(true);
+        yield* seedThread(a);
+        yield* endRun(a);
+        const idle = yield* askSsh(a, { host: "t3-vm" });
+        expect(errorOf(idle)).toMatchObject({ code: "parent_not_active" });
+        const badPort = yield* askSsh(a, { host: "t3-vm", port: 70_000 }).pipe(Effect.flip);
+        expect(String(badPort)).toContain("65535");
+        const blank = yield* askSsh(a, { host: "  " }).pipe(Effect.flip);
+        expect(String(blank)).toContain("Invalid parameters");
+        expect(yield* cardOf(a)).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.live("stopping the thread ends a card still waiting, and a retry hears cancelled", () =>
+    withLaptop((a) =>
+      Effect.gen(function* () {
+        yield* seedThread(a);
+        yield* askSsh(a, { host: "t3-vm", clientRequestId: "ssh-stop" });
+        const card = yield* pendingCard(a);
+        yield* a.orchestrator.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make("command:stop:ssh"),
+          threadId,
+        });
+        expect(yield* cardOf(a)).toMatchObject({ status: "cancelled", linkStatus: "cancelled" });
+        const late = yield* connectVm(a, card.id).pipe(Effect.flip);
+        expect(late.reason).toBe("already_answered");
+        const retried = yield* askSsh(a, { host: "t3-vm", clientRequestId: "ssh-stop" });
+        expect(retried.structuredContent).toEqual({ status: "cancelled" });
+      }),
+    ),
+  );
+});

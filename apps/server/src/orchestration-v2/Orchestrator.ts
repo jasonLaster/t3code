@@ -11164,7 +11164,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 : command.linkStatus === "failed"
                   ? "failed"
                   : "cancelled",
-            title: command.label ?? command.url ?? "Link an environment",
+            title:
+              command.label ??
+              command.url ??
+              (command.ssh === undefined ? "Link an environment" : `Connect ${command.ssh.host}`),
             startedAt: existing?.startedAt ?? now,
             completedAt: pending ? null : now,
             updatedAt: now,

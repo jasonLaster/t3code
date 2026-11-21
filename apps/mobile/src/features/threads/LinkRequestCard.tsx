@@ -10,6 +10,7 @@ import {
   linkRequestInitialMachine,
   type LinkRequestItem,
   linkRequestTarget,
+  linkRequestTargetName,
   rankMachinesByHint,
 } from "@t3tools/client-runtime/link-request";
 import {
@@ -137,9 +138,11 @@ function PendingLinkRequest(props: {
     <View className="mb-3 gap-3 rounded-[20px] border border-border bg-card-alt p-4">
       <View className="gap-1">
         <Text className="font-t3-bold text-base text-foreground">
-          {item.url === undefined
-            ? gt("Link a machine to this environment")
-            : gt("Link {target} to this environment", { target: linkDestination(item.url) })}
+          {item.ssh !== undefined
+            ? gt("Connect {target} over SSH", { target: linkRequestTargetName(item, m) })
+            : item.url === undefined
+              ? gt("Link a machine to this environment")
+              : gt("Link {target} to this environment", { target: linkDestination(item.url) })}
         </Text>
         {item.reason.trim() ? (
           <Text className="font-sans text-sm leading-5 text-foreground-muted">{item.reason}</Text>
@@ -156,13 +159,20 @@ function PendingLinkRequest(props: {
       ) : null}
       {canAnswer ? (
         <>
-          <Button
-            label={picksMachine(item) ? gt("Choose machine…") : gt("Review link…")}
-            disabled={declining}
-            onPress={() => setOpen(true)}
-            tone="primary"
-            fullWidth
-          />
+          {item.ssh === undefined ? (
+            <Button
+              label={picksMachine(item) ? gt("Choose machine…") : gt("Review link…")}
+              disabled={declining}
+              onPress={() => setOpen(true)}
+              tone="primary"
+              fullWidth
+            />
+          ) : (
+            // Only the desktop app can open an SSH tunnel.
+            <Text className="font-sans text-sm text-foreground-muted">
+              <T>Open this thread in the T3 Code desktop app to connect over SSH.</T>
+            </Text>
+          )}
           <View className="flex-row justify-end">
             <Pressable
               accessibilityRole="button"

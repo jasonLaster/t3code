@@ -1811,6 +1811,23 @@ export const OrchestrationV2LinkRequestStatus = Schema.Literals([
 export type OrchestrationV2LinkRequestStatus = typeof OrchestrationV2LinkRequestStatus.Type;
 
 /**
+ * An SSH host an agent asked the user to connect as an environment. The
+ * user's desktop app connects with its own SSH config and keys; nothing about
+ * how it signs in passes through orchestration.
+ */
+export const OrchestrationV2LinkRequestSshTarget = Schema.Struct({
+  /** An ssh config alias or a hostname. */
+  host: TrimmedNonEmptyString,
+  username: Schema.optional(TrimmedNonEmptyString),
+  port: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(65_535))),
+});
+export type OrchestrationV2LinkRequestSshTarget = typeof OrchestrationV2LinkRequestSshTarget.Type;
+
+/** An SSH host as the user would type it: `user@host:port`. */
+export const formatLinkRequestSshTarget = (ssh: OrchestrationV2LinkRequestSshTarget): string =>
+  `${ssh.username === undefined ? "" : `${ssh.username}@`}${ssh.host}${ssh.port === undefined ? "" : `:${ssh.port}`}`;
+
+/**
  * An agent asked the user to link another environment. The user picks the
  * access; the pairing code never passes through orchestration, so the item
  * carries only what was asked and how it ended.
@@ -1831,6 +1848,11 @@ const OrchestrationV2LinkRequestFields = {
   hint: Schema.optional(Schema.String),
   /** The access the agent suggested; the user's choice is final. */
   requestedAccess: Schema.optional(AuthMcpClientAccess),
+  /**
+   * Set when the agent asked for an SSH environment instead of a link. The
+   * user's desktop app connects it; `linkedAccess` stays unset.
+   */
+  ssh: Schema.optional(OrchestrationV2LinkRequestSshTarget),
   linkStatus: OrchestrationV2LinkRequestStatus,
   linkedEnvironmentId: Schema.optional(EnvironmentId),
   linkedLabel: Schema.optional(Schema.String),
@@ -3978,6 +4000,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     label: Schema.optional(Schema.String),
     hint: Schema.optional(Schema.String),
     requestedAccess: Schema.optional(AuthMcpClientAccess),
+    ssh: Schema.optional(OrchestrationV2LinkRequestSshTarget),
     linkStatus: OrchestrationV2LinkRequestStatus,
     linkedEnvironmentId: Schema.optional(EnvironmentId),
     linkedLabel: Schema.optional(Schema.String),

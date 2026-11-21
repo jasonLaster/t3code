@@ -954,6 +954,32 @@ export const OrchestratorMcpEnvironmentLinkResult = Schema.Union([
 ]);
 export type OrchestratorMcpEnvironmentLinkResult = typeof OrchestratorMcpEnvironmentLinkResult.Type;
 
+export const OrchestratorMcpEnvironmentAddSshInput = Schema.Struct({
+  host: TrimmedNonEmptyString.check(Schema.isMaxLength(255)).annotate({
+    description: "An ssh config alias or hostname the user gave. Never guess one.",
+  }),
+  username: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
+  port: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(65_535))),
+  reason: Schema.optional(TrimmedNonEmptyString).annotate({
+    description: "One sentence for the card.",
+  }),
+  clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+});
+export type OrchestratorMcpEnvironmentAddSshInput =
+  typeof OrchestratorMcpEnvironmentAddSshInput.Type;
+
+export const OrchestratorMcpEnvironmentAddSshResult = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("pending"), turnItemId: TurnItemId }),
+  Schema.Struct({
+    status: Schema.Literal("connected"),
+    environmentId: EnvironmentId,
+    label: Schema.String,
+  }),
+  Schema.Struct({ status: Schema.Literals(["declined", "cancelled"]) }),
+]);
+export type OrchestratorMcpEnvironmentAddSshResult =
+  typeof OrchestratorMcpEnvironmentAddSshResult.Type;
+
 export const OrchestratorMcpEnvironmentUnlinkInput = Schema.Struct({
   environmentId: EnvironmentId.annotate({
     description: "The linked environment to forget, from t3_environment_links.",

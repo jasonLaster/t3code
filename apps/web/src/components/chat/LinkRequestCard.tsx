@@ -42,6 +42,7 @@ import { Dialog } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Radio, RadioGroup } from "../ui/radio-group";
 import { WizardFooter, WizardHeader, WizardPanel, WizardPopup, WizardSteps } from "../ui/wizard";
+import { PendingSshRequest } from "./SshRequestCard";
 import { WorkLogRow } from "./WorkLog";
 
 /** Whether the agent left the machine for the user to pick. */
@@ -83,7 +84,11 @@ export function LinkRequestCard(props: {
       />
     );
   }
-  return <PendingLinkRequest environmentId={props.environmentId} item={item} />;
+  return item.ssh === undefined ? (
+    <PendingLinkRequest environmentId={props.environmentId} item={item} />
+  ) : (
+    <PendingSshRequest environmentId={props.environmentId} item={{ ...item, ssh: item.ssh }} />
+  );
 }
 
 function PendingLinkRequest(props: {

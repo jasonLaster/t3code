@@ -411,6 +411,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["Ask to link", "Asking to link", "Asked to link", "an environment"],
     "environment-link",
   ),
+  t3_environment_add_ssh: tool(
+    ["Ask to connect", "Asking to connect", "Asked to connect", "an SSH environment"],
+    "environment-link",
+  ),
   t3_environment_unlink: tool(
     ["Forget", "Forgetting", "Forgot", "a linked environment"],
     "environment-unlink",

@@ -7,10 +7,13 @@
 import {
   CommandId,
   type EnvironmentId,
+  formatLinkRequestSshTarget,
   MessageId,
   type NodeId,
   type OrchestrationV2Notification,
   type OrchestrationV2TurnItem,
+  type OrchestratorMcpEnvironmentAddSshInput,
+  type OrchestratorMcpEnvironmentAddSshResult,
   type OrchestratorMcpEnvironmentLinkInput,
   type OrchestratorMcpEnvironmentLinkResult,
   OrchestratorMcpFailure,
@@ -39,7 +42,7 @@ type LinkRequestItem = Extract<OrchestrationV2TurnItem, { readonly type: "link_r
 /** The request as it was asked, which every update of its card repeats. */
 type LinkRequestAsk = Pick<
   LinkRequestItem,
-  "id" | "threadId" | "url" | "reason" | "environmentId" | "hint" | "requestedAccess"
+  "id" | "threadId" | "url" | "reason" | "environmentId" | "hint" | "requestedAccess" | "ssh"
 > & { readonly runId: RunId; readonly nodeId: NodeId };
 
 /** The notification that tells the agent how its card ended. */
@@ -70,6 +73,15 @@ export class PeerLinkRequests extends Context.Service<
       scope: McpInvocationContext.McpInvocationScope,
       input: OrchestratorMcpEnvironmentLinkInput,
     ) => Effect.Effect<OrchestratorMcpEnvironmentLinkResult, OrchestratorMcpFailure>;
+    /**
+     * Shows a card asking the user to connect an SSH host, and returns at once.
+     * Their desktop app connects it with their own SSH config and keys, then
+     * answers with the environment it saved. Needs no Linked environments beta.
+     */
+    readonly requestSsh: (
+      scope: McpInvocationContext.McpInvocationScope,
+      input: OrchestratorMcpEnvironmentAddSshInput,
+    ) => Effect.Effect<OrchestratorMcpEnvironmentAddSshResult, OrchestratorMcpFailure>;
     /**
      * Answers a pending card and tells the agent. Linking uses the pairing
      * code once; a link the other environment refuses closes the card as
@@ -132,6 +144,7 @@ const make = Effect.gen(function* () {
       ...(card.environmentId === undefined ? {} : { environmentId: card.environmentId }),
       ...(card.hint === undefined ? {} : { hint: card.hint }),
       ...(card.requestedAccess === undefined ? {} : { requestedAccess: card.requestedAccess }),
+      ...(card.ssh === undefined ? {} : { ssh: card.ssh }),
       ...outcome,
       ...(wake === undefined ? {} : { wake }),
       ...(answeringTurnItemIds === undefined ? {} : { answeringTurnItemIds }),
@@ -197,11 +210,6 @@ const make = Effect.gen(function* () {
           message: PeerLinks.LINKED_ENVIRONMENTS_OFF,
         });
       }
-      const unreadable = (error: unknown) =>
-        new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: `Unable to read the link request: ${errorMessage(error)}`,
-        });
       if (input.url !== undefined && input.environmentId !== undefined) {
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
@@ -221,7 +229,7 @@ const make = Effect.gen(function* () {
           if (input.clientRequestId !== undefined) {
             yield* closeAsLinked(
               threadId,
-              cardId(threadId, scope.requestNamespace, input.clientRequestId),
+              cardId("link", threadId, scope.requestNamespace, input.clientRequestId),
               linked.value,
             ).pipe(
               Effect.mapError(
@@ -241,61 +249,96 @@ const make = Effect.gen(function* () {
           } as const;
         }
       }
-      const key = input.clientRequestId ?? (yield* random.uuidV4());
-      // A retry with the same clientRequestId finds this card and records nothing.
-      const turnItemId = cardId(threadId, scope.requestNamespace, key);
-      if (input.clientRequestId !== undefined) {
-        const existing = yield* readCard(threadId, turnItemId).pipe(Effect.mapError(unreadable));
-        if (existing !== undefined) return resultOf(existing);
-      }
-      const parent = yield* threadManagement
-        .getThreadRecords(threadId, ["runs"], { messageRoles: [] })
-        .pipe(Effect.mapError(unreadable));
-      const run = ThreadManagementService.latestActiveRun(parent);
-      if (
-        run === undefined ||
-        run.rootNodeId === null ||
-        run.providerInstanceId !== threadScope.thread.providerInstanceId
-      ) {
-        return yield* new OrchestratorMcpFailure({
-          code: "parent_not_active",
-          message:
-            "Asking to link an environment requires an active run owned by this MCP provider session.",
-        });
-      }
       // Anything can answer at an address as any machine, so a card for an
       // address names none. The client names it from addresses it already has.
-      yield* record(
-        {
-          id: turnItemId,
-          threadId,
-          runId: run.id,
-          nodeId: run.rootNodeId,
-          ...(input.url === undefined ? {} : { url: input.url }),
-          reason: input.reason ?? "",
-          ...(input.environmentId === undefined ? {} : { environmentId: input.environmentId }),
-          ...(input.hint === undefined ? {} : { hint: input.hint }),
-          ...(input.requestedAccess === undefined
-            ? {}
-            : { requestedAccess: input.requestedAccess }),
-        },
-        { linkStatus: "pending" },
-        CommandId.make(
-          `command:mcp:${encodeURIComponent(scope.requestNamespace)}:link-pending:${encodeURIComponent(key)}`,
-        ),
-      ).pipe(
-        Effect.mapError(
-          (error) =>
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: `Could not record the link request: ${errorMessage(error)}`,
-            }),
-        ),
-      );
-      return pendingResult(turnItemId);
+      const opened = yield* openCard(threadScope, input.clientRequestId, "link", {
+        ...(input.url === undefined ? {} : { url: input.url }),
+        reason: input.reason ?? "",
+        ...(input.environmentId === undefined ? {} : { environmentId: input.environmentId }),
+        ...(input.hint === undefined ? {} : { hint: input.hint }),
+        ...(input.requestedAccess === undefined ? {} : { requestedAccess: input.requestedAccess }),
+      });
+      return opened.existing === undefined
+        ? pendingResult(opened.turnItemId)
+        : resultOf(opened.existing);
     },
     Effect.withSpan("PeerLinkRequests.request"),
   );
+
+  /**
+   * Records a new pending card in the caller's thread, or finds the one an
+   * earlier call with the same clientRequestId recorded and records nothing.
+   */
+  const openCard = Effect.fn("PeerLinkRequests.openCard")(function* (
+    threadScope: McpInvocationContext.McpThreadInvocationScope,
+    clientRequestId: string | undefined,
+    kind: CardKind,
+    ask: Omit<LinkRequestAsk, "id" | "threadId" | "runId" | "nodeId">,
+  ) {
+    const threadId = threadScope.thread.threadId;
+    const unreadable = (error: unknown) =>
+      new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: `Unable to read the ${CARD_NOUN[kind]}: ${errorMessage(error)}`,
+      });
+    const key = clientRequestId ?? (yield* random.uuidV4());
+    const turnItemId = cardId(kind, threadId, threadScope.requestNamespace, key);
+    if (clientRequestId !== undefined) {
+      const existing = yield* readCard(threadId, turnItemId).pipe(Effect.mapError(unreadable));
+      if (existing !== undefined) return { turnItemId, existing };
+    }
+    const parent = yield* threadManagement
+      .getThreadRecords(threadId, ["runs"], { messageRoles: [] })
+      .pipe(Effect.mapError(unreadable));
+    const run = ThreadManagementService.latestActiveRun(parent);
+    if (
+      run === undefined ||
+      run.rootNodeId === null ||
+      run.providerInstanceId !== threadScope.thread.providerInstanceId
+    ) {
+      return yield* new OrchestratorMcpFailure({
+        code: "parent_not_active",
+        message: `Asking to ${CARD_VERB[kind]} requires an active run owned by this MCP provider session.`,
+      });
+    }
+    yield* record(
+      { ...ask, id: turnItemId, threadId, runId: run.id, nodeId: run.rootNodeId },
+      { linkStatus: "pending" },
+      CommandId.make(
+        `command:mcp:${encodeURIComponent(threadScope.requestNamespace)}:${kind}-pending:${encodeURIComponent(key)}`,
+      ),
+    ).pipe(
+      Effect.mapError(
+        (error) =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: `Could not record the ${CARD_NOUN[kind]}: ${errorMessage(error)}`,
+          }),
+      ),
+    );
+    return { turnItemId, existing: undefined };
+  });
+
+  const requestSsh: PeerLinkRequests["Service"]["requestSsh"] = Effect.fn(
+    "PeerLinkRequests.requestSsh",
+  )(function* (scope, input) {
+    // The card is shown in, and answered from, the caller's own thread.
+    const threadScope = yield* McpInvocationContext.requireThreadScope(
+      scope,
+      "t3_environment_add_ssh",
+    );
+    const opened = yield* openCard(threadScope, input.clientRequestId, "ssh", {
+      reason: input.reason ?? "",
+      ssh: {
+        host: input.host,
+        ...(input.username === undefined ? {} : { username: input.username }),
+        ...(input.port === undefined ? {} : { port: input.port }),
+      },
+    });
+    return opened.existing === undefined
+      ? sshPendingResult(opened.turnItemId)
+      : sshResultOf(opened.existing);
+  }, Effect.withSpan("PeerLinkRequests.requestSsh"));
 
   /** Links the machine the user picked, or finds the link they chose to keep. */
   const answerOutcome = (
@@ -304,6 +347,13 @@ const make = Effect.gen(function* () {
     switch (answer.type) {
       case "decline":
         return Effect.succeed({ linkStatus: "declined" });
+      // The desktop app already connected and saved it; the card records that.
+      case "ssh-connected":
+        return Effect.succeed({
+          linkStatus: "linked",
+          linkedEnvironmentId: answer.environmentId,
+          linkedLabel: answer.label,
+        });
       case "use-existing":
         return usableLink(answer.environmentId).pipe(
           Effect.flatMap(
@@ -366,6 +416,11 @@ const make = Effect.gen(function* () {
           if (card.linkStatus !== "pending") {
             return yield* new PeerLinkRequestError({ reason: "already_answered" });
           }
+          // An SSH card takes only an SSH answer, and a link card never one:
+          // neither kind may close the other.
+          if (input.answer.type !== "decline" && (card.ssh !== undefined) !== isSshAnswer(input)) {
+            return yield* new PeerLinkRequestError({ reason: "wrong_answer" });
+          }
           return { ...card, runId: card.runId, nodeId: card.nodeId };
         }),
       );
@@ -408,17 +463,58 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  return PeerLinkRequests.of({ request, answer });
+  return PeerLinkRequests.of({ request, requestSsh, answer });
 });
+
+const isSshAnswer = (input: PeerLinkRequestAnswerInput) => input.answer.type === "ssh-connected";
+
+/** A card asks for a link between environments, or for an SSH environment. */
+type CardKind = "link" | "ssh";
+const CARD_NOUN: Record<CardKind, string> = {
+  link: "link request",
+  ssh: "SSH environment request",
+};
+const CARD_VERB: Record<CardKind, string> = {
+  link: "link an environment",
+  ssh: "add an SSH environment",
+};
 
 /**
  * Turn item ids are global; scope the key to this thread and provider session,
- * since a later session may reuse it.
+ * since a later session may reuse it. Each kind has its own ids, so a key one
+ * tool used never finds the other tool's card.
  */
-const cardId = (threadId: ThreadId, requestNamespace: string, key: string) =>
+const cardId = (kind: CardKind, threadId: ThreadId, requestNamespace: string, key: string) =>
   TurnItemId.make(
-    `turn-item:link-request:${encodeURIComponent(threadId)}:${encodeURIComponent(requestNamespace)}:${encodeURIComponent(key)}`,
+    `turn-item:${kind === "link" ? "link-request" : "ssh-request"}:${encodeURIComponent(threadId)}:${encodeURIComponent(requestNamespace)}:${encodeURIComponent(key)}`,
   );
+
+const sshTargetLabel = formatLinkRequestSshTarget;
+
+const sshPendingResult = (turnItemId: TurnItemId): OrchestratorMcpEnvironmentAddSshResult => ({
+  status: "pending",
+  turnItemId,
+});
+
+/** What a retry of an SSH request hears: the card's outcome. */
+const sshResultOf = (card: LinkRequestItem): OrchestratorMcpEnvironmentAddSshResult => {
+  switch (card.linkStatus) {
+    case "pending":
+      return sshPendingResult(card.id);
+    case "linked":
+      return {
+        status: "connected",
+        environmentId: card.linkedEnvironmentId!,
+        label: card.linkedLabel ?? (card.ssh === undefined ? "" : sshTargetLabel(card.ssh)),
+      };
+    // The client answers only once it connected, so a card never fails.
+    case "failed":
+    case "cancelled":
+      return { status: "cancelled" };
+    case "declined":
+      return { status: "declined" };
+  }
+};
 
 const pendingResult = (turnItemId: TurnItemId): OrchestratorMcpEnvironmentLinkResult => ({
   status: "pending",
@@ -454,9 +550,10 @@ const linkTarget = (card: Pick<LinkRequestItem, "url" | "environmentId">) =>
  * to do next. It carries the outcome only, never the pairing code.
  */
 const outcomeNotice = (
-  card: Pick<LinkRequestItem, "url" | "environmentId">,
+  card: Pick<LinkRequestItem, "url" | "environmentId" | "ssh">,
   outcome: LinkRequestOutcome,
 ): Omit<LinkRequestWake, "messageId"> => {
+  if (card.ssh !== undefined) return sshOutcomeNotice(card.ssh, outcome);
   const target = linkTarget(card);
   switch (outcome.linkStatus) {
     case "linked": {
@@ -489,6 +586,36 @@ const outcomeNotice = (
         },
       };
   }
+};
+
+/**
+ * The notification an SSH answer sends the agent. The connection belongs to
+ * the user's app and tunnels to a loopback port, so agents here cannot use it.
+ */
+const sshOutcomeNotice = (
+  ssh: NonNullable<LinkRequestItem["ssh"]>,
+  outcome: LinkRequestOutcome,
+): Omit<LinkRequestWake, "messageId"> => {
+  const target = sshTargetLabel(ssh);
+  if (outcome.linkStatus === "linked") {
+    const label = outcome.linkedLabel ?? target;
+    return {
+      text: `The user connected ${target} over SSH as the environment ${label} (${outcome.linkedEnvironmentId}). They can start threads there from the app; this connection does not let agents here reach it.`,
+      notification: {
+        source: { kind: "background_task" },
+        outcome: "completed",
+        summary: `Connected ${label} over SSH`,
+      },
+    };
+  }
+  return {
+    text: `The user declined to connect ${target} over SSH.`,
+    notification: {
+      source: { kind: "background_task" },
+      outcome: "cancelled",
+      summary: `Declined to connect ${target}`,
+    },
+  };
 };
 
 export const layer = Layer.effect(PeerLinkRequests, make);

@@ -1,8 +1,10 @@
 import { errorDisplayMessage } from "./errors/translatable.ts";
 import {
   type AuthMcpClientAccess,
+  type DesktopSshEnvironmentTarget,
   type EnvironmentId,
   type EnvironmentMachineKind,
+  formatLinkRequestSshTarget,
   type OrchestrationV2TurnItem,
   type PeerLinkRequestAnswerInput,
   type PeerLinkName,
@@ -70,11 +72,32 @@ const originOf = (url: string) => {
 /** Where a link to `address` sends its pairing code, which a username or path in it can hide. */
 export const linkDestination = (address: string): string => originOf(address) ?? address.trim();
 
+type SshRequestTarget = NonNullable<LinkRequestItem["ssh"]>;
+
+/** An SSH host as the user would type it: `user@host:port`. */
+export const sshRequestTargetLabel = formatLinkRequestSshTarget;
+
+/**
+ * What the desktop app connects for an SSH request. The host is the alias too,
+ * so an ssh config entry of that name supplies its user, port and key.
+ */
+export const sshRequestDesktopTarget = (ssh: SshRequestTarget): DesktopSshEnvironmentTarget => ({
+  alias: ssh.host,
+  hostname: ssh.host,
+  username: ssh.username ?? null,
+  port: ssh.port ?? null,
+});
+
 /** What the card calls the other environment: where the address asked for leads, never a name it answers with. */
 export const linkRequestTargetName = (
-  item: Pick<LinkRequestItem, "url">,
+  item: Pick<LinkRequestItem, "url"> & Partial<Pick<LinkRequestItem, "ssh">>,
   resolve: MFunctionType = mFallback,
-): string => (item.url === undefined ? resolve(msg("a machine")) : linkDestination(item.url));
+): string =>
+  item.ssh !== undefined
+    ? sshRequestTargetLabel(item.ssh)
+    : item.url === undefined
+      ? resolve(msg("a machine"))
+      : linkDestination(item.url);
 
 /** A machine the user could link a thread's environment to. */
 export interface LinkableMachine {
@@ -291,11 +314,23 @@ export type LinkRequestDisplay =
  * names an access level the way the client's access picker does.
  */
 export function linkRequestDisplay(
-  item: Pick<LinkRequestItem, "linkStatus" | "url" | "linkedLabel" | "linkedAccess" | "failure">,
+  item: Pick<LinkRequestItem, "linkStatus" | "url" | "linkedLabel" | "linkedAccess" | "failure"> &
+    Partial<Pick<LinkRequestItem, "ssh">>,
   visibility: "local" | "inherited" | "synthetic",
   accessLabel: (access: AuthMcpClientAccess) => string,
   resolve: MFunctionType = mFallback,
 ): LinkRequestDisplay {
+  if (item.ssh !== undefined && item.linkStatus === "linked") {
+    return {
+      kind: "answered",
+      outcome: "linked",
+      label: resolve(
+        msg("Connected {target} over SSH", {
+          target: item.linkedLabel ?? sshRequestTargetLabel(item.ssh),
+        }),
+      ),
+    };
+  }
   switch (item.linkStatus) {
     case "pending":
       return visibility === "local"
@@ -378,6 +413,20 @@ export function linkRequestAnswerInput(
       access: answer.access,
       pairingCode,
     },
+  };
+}
+
+/** Answers an SSH request with the environment the desktop app connected and saved. */
+export function sshRequestAnswerInput(
+  item: Pick<LinkRequestItem, "id" | "threadId" | "ssh">,
+  connected: { readonly environmentId: EnvironmentId; readonly label: string },
+): PeerLinkRequestAnswerInput | null {
+  if (item.ssh === undefined) return null;
+  const label = connected.label.trim() || sshRequestTargetLabel(item.ssh);
+  return {
+    threadId: item.threadId,
+    turnItemId: item.id,
+    answer: { type: "ssh-connected", environmentId: connected.environmentId, label },
   };
 }
 

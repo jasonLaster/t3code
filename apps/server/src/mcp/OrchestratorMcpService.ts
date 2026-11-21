@@ -1180,6 +1180,11 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
     case "secret_request":
       return `Asked the user for ${item.label}: ${item.secretStatus}.`;
     case "link_request":
+      if (item.ssh !== undefined) {
+        return item.linkStatus === "linked"
+          ? `Connected ${item.ssh.host} over SSH as ${item.linkedLabel ?? item.linkedEnvironmentId}.`
+          : `Asked the user to connect ${item.ssh.host} over SSH: ${item.linkStatus}.`;
+      }
       return item.linkStatus === "linked"
         ? `Linked ${item.linkedLabel ?? item.url ?? "an environment"} (${item.linkedAccess}).`
         : `Asked the user to link ${item.url ?? "an environment"}: ${item.linkStatus}.`;

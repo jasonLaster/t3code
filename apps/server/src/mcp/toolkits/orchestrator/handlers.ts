@@ -215,6 +215,14 @@ const handlers = {
       return yield* requests.request(scope, input);
     }),
   ),
+  // Adds one of the user's environments, so it is an environment setting too.
+  t3_environment_add_ssh: McpToolAccess.writesEnvironment((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const requests = yield* PeerLinkRequests.PeerLinkRequests;
+      return yield* requests.requestSsh(scope, input);
+    }),
+  ),
   t3_environment_unlink: McpToolAccess.writesEnvironment(({ environmentId }) =>
     Effect.gen(function* () {
       const links = yield* PeerLinks.PeerLinks;

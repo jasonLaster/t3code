@@ -18,6 +18,9 @@ import {
   linkRequestTarget,
   linkRequestTargetName,
   rankMachinesByHint,
+  sshRequestAnswerInput,
+  sshRequestDesktopTarget,
+  sshRequestTargetLabel,
 } from "./linkRequest.ts";
 
 const item = {
@@ -483,5 +486,74 @@ describe("linkRequestFailureMessage", () => {
     expect(linkRequestFailureMessage({ _tag: "SchemaError", message: "code=abc" })).toBe(
       "Could not answer the request. Try again.",
     );
+  });
+});
+
+describe("SSH requests", () => {
+  const full = { host: "54.69.21.185", username: "ubuntu", port: 2222 };
+  const alias = { host: "t3-vm" };
+
+  it("names the host as the user would type it", () => {
+    expect(sshRequestTargetLabel(full)).toBe("ubuntu@54.69.21.185:2222");
+    expect(sshRequestTargetLabel(alias)).toBe("t3-vm");
+    expect(linkRequestTargetName({ url: undefined, ssh: full })).toBe("ubuntu@54.69.21.185:2222");
+  });
+
+  it("connects the host as an ssh config alias, so the config supplies what the agent left out", () => {
+    expect(sshRequestDesktopTarget(alias)).toEqual({
+      alias: "t3-vm",
+      hostname: "t3-vm",
+      username: null,
+      port: null,
+    });
+    expect(sshRequestDesktopTarget(full)).toEqual({
+      alias: "54.69.21.185",
+      hostname: "54.69.21.185",
+      username: "ubuntu",
+      port: 2222,
+    });
+  });
+
+  it("shows a connected card as connected over SSH, with no access level", () => {
+    expect(
+      linkRequestDisplay(
+        { url: undefined, ssh: alias, linkStatus: "linked", linkedLabel: "VM" },
+        "local",
+        accessLabel,
+      ),
+    ).toEqual({ kind: "answered", outcome: "linked", label: "Connected VM over SSH" });
+    expect(
+      linkRequestDisplay({ url: undefined, ssh: full, linkStatus: "linked" }, "local", accessLabel),
+    ).toMatchObject({ label: "Connected ubuntu@54.69.21.185:2222 over SSH" });
+    expect(
+      linkRequestDisplay(
+        { url: undefined, ssh: alias, linkStatus: "declined" },
+        "local",
+        accessLabel,
+      ),
+    ).toMatchObject({ outcome: "declined" });
+    expect(
+      linkRequestDisplay(
+        { url: undefined, ssh: alias, linkStatus: "pending" },
+        "inherited",
+        accessLabel,
+      ),
+    ).toMatchObject({ kind: "pending-elsewhere" });
+  });
+
+  it("answers with the environment the desktop app saved, named after the host when unnamed", () => {
+    const vm = EnvironmentId.make("environment-vm");
+    expect(
+      sshRequestAnswerInput({ ...item, ssh: alias }, { environmentId: vm, label: " VM " }),
+    ).toEqual({
+      threadId: item.threadId,
+      turnItemId: item.id,
+      answer: { type: "ssh-connected", environmentId: vm, label: "VM" },
+    });
+    expect(
+      sshRequestAnswerInput({ ...item, ssh: full }, { environmentId: vm, label: "  " }),
+    ).toMatchObject({ answer: { label: "ubuntu@54.69.21.185:2222" } });
+    // A link card is never answered as an SSH one.
+    expect(sshRequestAnswerInput(item, { environmentId: vm, label: "VM" })).toBeNull();
   });
 });
