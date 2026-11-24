@@ -266,6 +266,17 @@ it.effect(
       expect(titled.launched[0]).toMatchObject({ title: "Fix", generateTitle: true });
       expect(titled.launched[0]?.titleRenamed).toBeUndefined();
 
+      // Over RPC a bare `/logout` needs providers:manage, which agents never hold.
+      const signOut = yield* launchWith("full-access", "full-access", {
+        title: "Out",
+        message: " /LOGOUT ",
+      });
+      expect(signOut.result).toMatchObject({
+        code: "capability_denied",
+        message: expect.stringContaining("sign a provider out"),
+      });
+      expect(signOut.launched).toHaveLength(0);
+
       for (const message of [undefined, "", " \n "]) {
         const idleTitled = yield* launchWith("full-access", "full-access", {
           title: "Fix",
