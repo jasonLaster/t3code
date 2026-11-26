@@ -654,12 +654,12 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
       ]);
       return yield* (
         options.pullRequestSummary?.(input, readOptions) ??
-        Effect.succeed(
-          makePullRequestSummary({
-            ...input,
-            state: "open",
-          }),
-        )
+          Effect.succeed(
+            makePullRequestSummary({
+              ...input,
+              state: "open",
+            }),
+          )
       );
     });
 
@@ -681,6 +681,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     ),
     updateSettings,
     updateProviderInstance: () => Effect.die("Unexpected provider mutation"),
+    updateProjectSettingsOverrides: () => Effect.die("Unexpected project override"),
     withSettingsSnapshot: (use) => Ref.get(settings).pipe(Effect.flatMap(use)),
     streamChanges: Stream.fromPubSub(settingsChanges),
     subscribeChanges: PubSub.subscribe(settingsChanges).pipe(

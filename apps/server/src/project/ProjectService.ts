@@ -551,11 +551,9 @@ export const make = Effect.gen(function* () {
     input.defaultThreadEnvMode === undefined &&
     input.autoPull === undefined
       ? Effect.void
-      : serverSettings.getSettings.pipe(
-          // A patch replaces the project's whole entry, so its other overrides are carried over.
-          Effect.flatMap(({ projectSettingsOverrides }) => {
-            const entry = {
-              ...projectSettingsOverrides[projectId],
+      : serverSettings
+          .updateProjectSettingsOverrides(projectId, {
+            set: {
               ...(input.scripts === undefined ? {} : { defaultProjectScripts: input.scripts }),
               ...(input.defaultModelSelection == null
                 ? {}
@@ -564,24 +562,24 @@ export const make = Effect.gen(function* () {
                 ? {}
                 : { defaultThreadEnvMode: input.defaultThreadEnvMode }),
               ...(input.autoPull === undefined ? {} : { defaultAutoPull: input.autoPull }),
-            };
+            },
             // A cleared project default inherits the machine's setting again.
-            if (input.defaultModelSelection === null) delete entry.defaultModelSelection;
-            if (input.defaultThreadEnvMode === null) delete entry.defaultThreadEnvMode;
-            return serverSettings.updateSettings({
-              projectSettingsOverrides: { [projectId]: entry },
-            });
-          }),
-          Effect.asVoid,
-          Effect.mapError(
-            (cause) =>
-              new ProjectOperationError({
-                operation: "dispatch-project-command",
-                projectId,
-                cause,
-              }),
-          ),
-        );
+            remove: [
+              ...(input.defaultModelSelection === null ? ["defaultModelSelection" as const] : []),
+              ...(input.defaultThreadEnvMode === null ? ["defaultThreadEnvMode" as const] : []),
+            ],
+          })
+          .pipe(
+            Effect.asVoid,
+            Effect.mapError(
+              (cause) =>
+                new ProjectOperationError({
+                  operation: "dispatch-project-command",
+                  projectId,
+                  cause,
+                }),
+            ),
+          );
 
   const create: ProjectService["Service"]["create"] = Effect.fn("ProjectService.create")(
     function* (input) {

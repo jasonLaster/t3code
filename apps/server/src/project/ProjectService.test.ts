@@ -11,6 +11,7 @@ import {
   ProjectId,
   type ProjectTrackedFolder,
   ProviderInstanceId,
+  type ManagedPolicyDocument,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
@@ -40,7 +41,9 @@ import * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
@@ -1233,3 +1236,172 @@ it.effect("rejects an update that waited on the lock while its project was delet
     );
   }).pipe(Effect.provide(layerProjectServiceDependencies)),
 );
+
+const layerProjectServiceWith = (settings: Layer.Layer<ServerSettings.ServerSettingsService>) =>
+  RuntimeLayer.layerProjectService.pipe(
+    Layer.provideMerge(ProjectEnrichmentService.layer),
+    Layer.provideMerge(layerWorkspacePaths),
+    Layer.provideMerge(layerMetadata),
+    Layer.provideMerge(settings),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
+    Layer.provideMerge(
+      ServerConfig.layerTest(process.cwd(), { prefix: "project-service-overrides-" }),
+    ),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+    Layer.provideMerge(layerEnrichmentCompletions),
+  );
+
+const layerSettingsUnderPolicy = (policy: ManagedPolicyDocument) =>
+  ServerSettings.layer.pipe(
+    Layer.provide(ServerSecretStore.layer),
+    Layer.provide(ManagedPolicy.layerTest(policy)),
+  );
+
+const overrideModel = {
+  instanceId: ProviderInstanceId.make("claudeAgent"),
+  model: "claude-sonnet-5-5",
+};
+
+it.effect("a project update keeps a project override saved while it ran", () => {
+  const projectId = ProjectId.make("project:override-race");
+  let saveAppEdit = false;
+  return Effect.gen(function* () {
+    const service = yield* ProjectService.ProjectService;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    yield* service.create({
+      commandId: CommandId.make("command:override-race:create"),
+      projectId,
+      title: "Override race",
+      workspaceRoot: "/work/override-race",
+    });
+    saveAppEdit = true;
+    yield* service.update({
+      commandId: CommandId.make("command:override-race:update"),
+      projectId,
+      defaultModelSelection: overrideModel,
+    });
+    assert.isFalse(saveAppEdit);
+    assert.deepEqual((yield* settings.getSettings).projectSettingsOverrides[projectId], {
+      defaultThreadEnvMode: "worktree",
+      defaultModelSelection: overrideModel,
+    });
+  }).pipe(
+    Effect.provide(
+      layerProjectServiceWith(
+        Layer.effect(
+          ServerSettings.ServerSettingsService,
+          Effect.map(Effect.service(ServerSettings.ServerSettingsService), (base) => {
+            // The app saves another of the project's overrides while the update runs: after any
+            // read of Settings, or else just before the update's own write.
+            const appEdit = Effect.suspend(() => {
+              if (!saveAppEdit) return Effect.void;
+              saveAppEdit = false;
+              return base
+                .updateSettings({
+                  projectSettingsOverrides: { [projectId]: { defaultThreadEnvMode: "worktree" } },
+                })
+                .pipe(Effect.asVoid);
+            });
+            return {
+              ...base,
+              getSettings: base.getSettings.pipe(Effect.tap(() => appEdit)),
+              updateProjectSettingsOverrides: (id, change) =>
+                appEdit.pipe(Effect.andThen(base.updateProjectSettingsOverrides(id, change))),
+            };
+          }),
+        ).pipe(Layer.provide(ServerSettings.layerTest())),
+      ),
+    ),
+  );
+});
+
+it.effect("a project update keeps a stored default runtime mode a policy limit clamps", () => {
+  const projectId = ProjectId.make("project:override-clamp");
+  return Effect.gen(function* () {
+    const service = yield* ProjectService.ProjectService;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const config = yield* ServerConfig.ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    yield* settings.start;
+    yield* service.create({
+      commandId: CommandId.make("command:override-clamp:create"),
+      projectId,
+      title: "Override clamp",
+      workspaceRoot: "/work/override-clamp",
+    });
+    yield* settings.updateSettings({
+      projectSettingsOverrides: { [projectId]: { defaultRuntimeMode: "full-access" } },
+    });
+    yield* service.update({
+      commandId: CommandId.make("command:override-clamp:update"),
+      projectId,
+      autoPull: true,
+    });
+    // Effective settings show the ceiling; the stored choice returns once the policy is removed.
+    const stored = JSON.parse(yield* fs.readFileString(config.settingsPath));
+    assert.deepEqual(stored.projectSettingsOverrides[projectId], {
+      defaultRuntimeMode: "full-access",
+      defaultAutoPull: true,
+    });
+    assert.equal(
+      (yield* settings.getSettings).projectSettingsOverrides[projectId]?.defaultRuntimeMode,
+      "auto-accept-edits",
+    );
+  }).pipe(
+    Effect.provide(
+      layerProjectServiceWith(
+        layerSettingsUnderPolicy({
+          schemaVersion: 1,
+          organization: "Example Corp",
+          limits: { maxRuntimeMode: "auto-accept-edits" },
+        }),
+      ),
+    ),
+  );
+});
+
+it.effect("a project update keeps a stored override a policy lock replaces", () => {
+  const projectId = ProjectId.make("project:override-lock");
+  return Effect.gen(function* () {
+    const service = yield* ProjectService.ProjectService;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const config = yield* ServerConfig.ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    // Saved before the organization locked agent device access off.
+    yield* fs.makeDirectory(path.dirname(config.settingsPath), { recursive: true });
+    yield* fs.writeFileString(
+      config.settingsPath,
+      JSON.stringify({
+        projectSettingsOverrides: { [projectId]: { enableAgentDeviceAccess: true } },
+      }),
+    );
+    yield* settings.start;
+    yield* service.create({
+      commandId: CommandId.make("command:override-lock:create"),
+      projectId,
+      title: "Override lock",
+      workspaceRoot: "/work/override-lock",
+    });
+    yield* service.update({
+      commandId: CommandId.make("command:override-lock:update"),
+      projectId,
+      autoPull: true,
+    });
+    const stored = JSON.parse(yield* fs.readFileString(config.settingsPath));
+    assert.deepEqual(stored.projectSettingsOverrides[projectId], {
+      enableAgentDeviceAccess: true,
+      defaultAutoPull: true,
+    });
+  }).pipe(
+    Effect.provide(
+      layerProjectServiceWith(
+        layerSettingsUnderPolicy({
+          schemaVersion: 1,
+          organization: "Example Corp",
+          settings: { enableAgentDeviceAccess: { value: false, locked: true } },
+        }),
+      ),
+    ),
+  );
+});
